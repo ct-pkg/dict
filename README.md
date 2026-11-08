@@ -22,7 +22,7 @@ Redis 7.2.x `dict` 的 CT 包封装：**只存指针、增量 rehash、safe iter
 - **不是 `hashmap` 的替代**：本包不拷贝键值，键必须在表的整个生命周期内保持有效且内容不变；
 - **不是 `std::map` 的替代**：本包会分配、会增长，内存不可预先计算；
 - 不统一三者接口；不提供自动析构；不是线程安全的；
-- **OOM 不做软失败**：内存不足时按 Redis `zmalloc` 语义直接 `abort`。
+- **OOM 不做软失败**：内存不足时直接 `abort`（Redis `zmalloc` 的默认行为），与 `hashmap` 同一契约。
 
 场景判据见 [docs/design.md](docs/design.md) §1，选型总表见 `ct/docs/design/map-options.md`。
 
@@ -150,9 +150,13 @@ ct install
 正式契约：`put` / `get` / `del` / `clear` / `reserve` **都不会**在 OOM 时返回可处理的失败；
 调用方不要把 `status()` 当作 OOM 通知。
 
+这是两个包（`dict` / `hashmap`）**共同的契约**：`hashmap` 虽有 `hashmap_oom()` 可检，但
+链式 `put` 没有错误通道，检出后同样终止（见其 README §5.5 与设计文档 §6）。因此
+"写失败怎么办"在这两个包之间切换时答案不变：不办，因为进程已经不在了。
+
 返回值只表达逻辑失败：键不存在（`DICT_NOT_FOUND`）、参数非法（`DICT_INVALID`）。
 `reserve()` 返回 `DICT_INVALID` 表示扩容被内部状态拒绝，不是 OOM。
-需要 OOM 可恢复语义时不要选本包：`std::map` 的 `put` 返回 -1，`hashmap` 用粘性状态暴露 OOM。
+需要 OOM 可恢复语义时只能选 `std::map`（`put` 返回 -1）；`hashmap` 与本包一样终止。
 软失败若要做，是独立切片，不在 S0 范围。
 
 ## 6. 常见配方
@@ -170,7 +174,7 @@ ct install
 | --- | --- | --- |
 | 插入过的键查不到 | 键缓冲区被改过内容，或已被 `free` | 键不可变、不可提前释放；需要托管用 `hashmap` |
 | 遍历时崩溃 | 用 `del()` 删了当前键，再读 `key()` / `value()` | 删当前条目用 `removeCurrent()` |
-| 进程在大量插入时直接退出 | OOM，Redis `zmalloc` 的默认行为是 `abort` | 本包不做软失败；降低内存压力或换 `hashmap` |
+| 进程在大量插入时直接退出 | OOM，Redis `zmalloc` 的默认行为是 `abort` | 本包与 `hashmap` 都不做软失败；降低内存压力，或改用定容的 `std::map` |
 | `reserve()` 返回 `DICT_INVALID` | 扩容被内部状态拒绝（正在 rehash / 扩容被禁用） | 稍后重试；不当作 OOM |
 | 安装后编译报缺 `zmalloc.h` | 第三方目录被放进了 `vendor/` | 必须是 `third_party/`；`ct get` 会跳过 `vendor` |
 | 误用了 7.4+/8.x 源码 | 许可不同（RSALv2/SSPL、AGPLv3） | 只用 7.2.x；见 LICENSE |
@@ -183,7 +187,7 @@ ct install
 - **键是 C 字符串**，按 `strlen` / `strcmp` 处理，不允许内嵌 `0x00`。
 - **不承诺遍历中用 `del()` 删除其它键**；只支持 `removeCurrent()`。
 - **不承诺遍历中新增的键可见**；只保证不崩、不漏掉遍历开始前已存在的键。
-- **OOM = abort**，没有错误码可降级。
+- **OOM = 进程终止**（与 `hashmap` 相同），没有错误码可降级。
 - **不暴露 `dictScan`**（CT 无闭包）、不暴露进程级 `dictSetResizeEnabled` / rehash 暂停开关。
 - **`len()` 是 `int`**，超过 2^31-1 条不在支持范围。
 - **非线程安全**；并发由调用方加锁。
@@ -195,5 +199,6 @@ ct install
 ### 0.1.0（2026-11-08，未发布）
 
 - S0：需求与骨架。`ct.pkg`、9 节 README、契约 `.m.ct` / `.h.ct`、`tests/` 占位。
-- 未写实现、未拷第三方源码、未 commit、未打 tag、未 push。
+- OOM 语义定为进程终止，并与 `hashmap` 统一为两个包共同的契约（§5.5）。
+- 未写实现、未拷第三方源码、未打 tag、未 push。
 - 首个 tag 为 `v0.1.0`，在此之前完成设计文档 §10 的 S2.0–S2.5。
