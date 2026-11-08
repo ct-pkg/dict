@@ -179,7 +179,30 @@ ct install
 | 安装后编译报缺 `zmalloc.h` | 第三方目录被放进了 `vendor/` | 必须是 `third_party/`；`ct get` 会跳过 `vendor` |
 | 误用了 7.4+/8.x 源码 | 许可不同（RSALv2/SSPL、AGPLv3） | 只用 7.2.x；见 LICENSE |
 
-## 8. 限制与未支持
+## 8. 术语表（Glossary）
+
+| 术语 | 含义 | 本包中的所指 |
+| --- | --- | --- |
+| `borrow`（借用） / 所有权（ownership） | 借用是只保存或返回指针、不取得所有权、由调用方负责释放的引用方式；所有权指"谁负责在何时释放对象"。 | `put` 不复制键也不复制值：`DictStrPtr` 的 `char *` 键与两种形状的 `void *` 值都是借用。表只拥有表自身和 `DictIntPtr` 的 4 字节键槽，`clear()` / `release()` 不释放键值指向的对象。 |
+| `handle`（句柄） | 指向包内部对象的不透明标识；调用方只能通过包的方法操作它，不能解引用或自行分配。 | `DictStrPtr *`、`DictIntPtr *`、`DictStrPtrIter *`、`DictIntPtrIter *` 四个句柄。 |
+| `host`（宿主） | CT 映射表里方法挂靠的类型；方法按（宿主, 方法名）寻址，同一宿主上不能有两个同名方法。 | 上述四个类型各自是宿主；`namespace dict`（trait `Lib`）只挂 `newStrPtr()` / `newIntPtr()`。 |
+| `mapping`（映射） | 把 CT 方法转发到 C 实现的 shim 注册行，一个公开方法对应一行。 | S2 落地：每个形状 14 行（表 9 + 迭代器 5），两个构造器另计，估算见 `docs/design.md` §7。 |
+| 链式返回自身 | 配置 / 写入方法返回接收者本身，以便把多次调用连成一条表达式；返回值不携带成功 / 失败信息。 | `put` / `clear` / `reserve` 返回 `DictStrPtr *` 或 `DictIntPtr *` 本身；`get` / `del` / `status` / `len` 返回状态码或计数，不参与链式。 |
+| `pub type` | CT 的公开类型别名声明；本包用它把 C 侧包装结构暴露成 CT 句柄，公开面不出现 C 类型。 | `Dict.m.ct` 里的四个 `pub type`：`DictStrPtr = struct ct_dict_strptr`、`DictIntPtr = struct ct_dict_intptr`，以及对应的两个迭代器类型。 |
+| `shim` | C 侧适配层：把 CT trait 方法桥接到上游 C API 的静态内联函数与注册代码。 | `dict/Dict.m.ct` 的 trait 由 shim 实现（S2 落地）；`dictType`、`int` 键槽、`removeCurrent` 的桥接都在这一层。 |
+| `DictStrPtr` / `DictIntPtr`（两种形状） | 本包两个具体表类型，靠键类型区分，各自独立成宿主。 | `DictStrPtr *`：借用 `char *` 键 → 借用 `void *` 值；`DictIntPtr *`：`int` 键 → 借用 `void *` 值。构造器为 `newStrPtr()` / `newIntPtr()`。 |
+| `rehash`（增量 rehash） | 桶数变化后把条目重新分布到新桶数组的过程；增量指把搬迁摊到多次操作，而不是一次搬完整表。 | 本包是增量 rehash：每次 `put` / `get` / `del` 搬少量桶，没有一次性全表停顿。`hashmap` 相反，是一次性搬全表。 |
+| `safe iterator`（安全迭代器） | 交出当前条目前已预取下一项的迭代器，因此删除当前元素后仍可继续遍历。 | `iter()` 返回 `DictStrPtrIter *` / `DictIntPtrIter *`；`removeCurrent()` 之后继续 `next()` 是安全的。`hashmap` 的 `HashStrIntIter *` / `HashIntPtrIter *` 是只读游标，没有这个保证。 |
+| `status()` | 读取最近一次数据 / 扩容操作留下的状态码，只表达逻辑失败。 | `DictStrPtr` 与 `DictIntPtr` 上各有一个 `status()`，返回 `DICT_OK` / `DICT_NOT_FOUND` / `DICT_INVALID`；**它不是 OOM 通知**——OOM 时进程已经 `abort()`，没有可查的状态（§5.5）。 |
+| `DICT_OK` / `DICT_NOT_FOUND` / `DICT_INVALID` | 本包三个状态码：成功、键不存在、参数非法。 | 值为 0 / 1 / 2，定义在 `DictTypes.h.ct`；`DICT_NOT_FOUND` 由 `get` / `del` / `removeCurrent` 未命中触发，`DICT_INVALID` 由空键、空句柄或 `reserve()` 被内部状态拒绝触发。 |
+| 键槽（key slot） | 存放 `int` 键值本身的 4 字节堆内存。 | 仅 `DictIntPtr`：shim 每次插入用 `zmalloc(4)` 分配键槽并写入 `int`，删除 / 清空 / 释放时由 `dictType` 的 `keyDestructor` 用 `zfree` 回收。`DictStrPtr` 的键是借用的，没有键槽。 |
+| `dictType` | Redis 中描述一种表的哈希、比较与键值析构回调的常量集合。 | 每个形状一个，只存在于 shim；`DictStrPtr` 的 `keyDestructor` / `valDestructor` 为 `NULL`，`DictIntPtr` 的 `keyDestructor` 就是键槽回收点。 |
+| `zmalloc` / `zfree` | Redis 的分配器包装，分配失败时走默认 handler 打印并 `abort()`。 | 本包的分配（表、条目、`int` 键槽）都经过它们；这也是 §5.5 的 OOM 契约在上游的落点。 |
+| `OOM` | out of memory，内存分配失败。 | 本包直接进程终止：`put` / `get` / `del` / `clear` / `reserve` 都不返回可处理的失败，调用方拿不到错误码。与 `hashmap` 的共同契约（§5.5）。 |
+| `third_party/` / `vendor/` | 存放 vendored 上游源码的目录约定。 | Redis `7.2.4` 的源文件与本地 `redisassert.h` 适配头都放 `third_party/`；不能改名 `vendor/`，`ct get` 会跳过该目录。 |
+| `S0` / `S2` | 本包落地切片的编号。 | S0 = 需求与骨架（当前状态），S2 = 上游抽取、实现、测试与安装态验收，见 `docs/design.md` §10。 |
+
+## 9. 限制与未支持
 
 - **没有自动析构**：只提供 `release()`，`Drop` 由调用方写。
 - **不拷贝键值**：键必须长期有效且不可变；值永远不归包所有。
@@ -194,11 +217,12 @@ ct install
 - **需要 9 个上游文件 + 1 个本地断言适配头**，比 `hashmap` 重；不追求单文件。
 - **不做泛型形状**：新增键值形状需新增 `dictType`、哈希/比较与 14 行 mapping。
 
-## 9. 版本与变更记录
+## 10. 版本与变更记录
 
 ### 0.1.0（2026-11-08，未发布）
 
-- S0：需求与骨架。`ct.pkg`、9 节 README、契约 `.m.ct` / `.h.ct`、`tests/` 占位。
+- 文档：新增 §8 术语表（Glossary），原 §8 / §9 顺延为 §9 / §10。
+- S0：需求与骨架。`ct.pkg`、10 节 README、契约 `.m.ct` / `.h.ct`、`tests/` 占位。
 - OOM 语义定为进程终止，并与 `hashmap` 统一为两个包共同的契约（§5.5）。
 - 未写实现、未拷第三方源码、未打 tag、未 push。
 - 首个 tag 为 `v0.1.0`，在此之前完成设计文档 §10 的 S2.0–S2.5。
