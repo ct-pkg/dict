@@ -221,16 +221,16 @@ M14 变异把构造器契约改成“返回 0”，`oom.c` 立即变红；M22 �
 | M20 | `requires` 下限必须真实 | 改成 `ct >= 0.19.0` | `FAIL requires: must be ct >= 0.20.3` |
 | M21 | 包不得依赖 `std` | 追加 `dep = std` | `FAIL dep: this package has no package dependencies` |
 | M22 | `reserve()` 的真实分配失败必须 abort | 把 `ct_dict_abort_oom()` 换成 `return CT_DICT_INVALID;` | `FAIL reserve OOM aborts: expected signal 6, status 0x0` |
-| M23 | 每套件断言数不得低于实测下限 | 把 `unit.ct` 的 `check()` 掏空（只让前 2 次计数） | `FAIL unit: expected at least 66 assertions, got 2` |
-| M24 | 增量 rehash 必须真的步进 | `third_party/dict.c` 里 `dictRehash(d,1)` → `dictRehash(d,0)` | `FAIL rehash is in progress at 1000 entries` 等 slots 断言；`FAIL rehash.ct: ...` |
-| M25 | 播种必须只有一个进程级闩锁 | 把 `ct_dict_seed_once` 改回 shim 内的 `static inline` + 头级 `static` 闩锁 | `FAIL multi_tu: run N lost keys across translation units` |
-| M26 | 迭代器必须检查 generation | 删除 `iter_next` / `key` / `value` 里的 `ct_dict_gen_valid` 比较 | ASan：`heap-use-after-free`，`FAIL gen: ASan reported a problem` |
-| M27 | README 代码块必须编译且输出正确 | 把 README §3 的 `printf("len: ...")` 改成多打印 1 | `FAIL README block 2 output: see diff`（`-1 +3`） |
+| M23 | 每套件断言数不得低于实测下限 | 把 `unit.ct` 的 `check()` 掏空（只让前 2 次计数） | `FAIL unit: expected at least 68 assertions, got 2` |
+| M24 | 增量 rehash 必须真的步进 | `third_party/dict.c` 里 `dictRehash(d,1)` → `dictRehash(d,0)` | `FAIL reserve starts an incremental rehash`（rehash.ct，passed=15/16）；`FAIL rehash completes once enough operations run`（slots，passed=1535/1536） |
+| M25 | 播种必须只有一个进程级闩锁 | 把 `ct_dict_seed_once` 改回 shim 内的 `static inline` + 函数级 `static` 闩锁（种子取各自 TU 的地址，确定性不同） | `FAIL multi_tu: run 1 lost keys across translation units` |
+| M26 | 迭代器必须检查 generation | 删除 `iter_next` / `key` / `value` 里的 `ct_dict_gen_valid` 比较 | ASan：`heap-use-after-free ... in dictNext`，`FAIL gen: ASan reported a problem` |
+| M27 | README 代码块必须编译且输出正确 | 把 README §3 的 `printf("len: ...")` 改成多打印 1 | `FAIL README block 2 output: see diff`：`len: 3` → `len: 4`、`len: 2` → `len: 3` |
 | M28 | 交付物必须被 git 跟踪 | 在干净副本里 `git rm --cached dict/seed.c` | `FAIL git delivery: delivered files are not tracked: dict/seed.c` |
-| M29 | shim 不得有有状态定义 | 在 shim 顶部加 `static int ct_dict_seeded = 0;` | `FAIL shim state: non-static-inline definition or function-local static` |
+| M29 | shim 不得有有状态定义 | 在 shim 顶部加 `static int ct_dict_seeded = 0;` | `FAIL shim state: non-static-inline definition or function-local static`（`59: static int ct_dict_seeded = 0;`） |
 
 变异均在 `/tmp/dict-mut` 的整包副本上执行，未改动交付树；每条记录来自对应
-`/tmp/m*.log` 的实际输出。M4 的“警告即失败”也解释了为什么 shim 全部使用
+`/tmp/m-m*.log` 的实际输出。M4 的“警告即失败”也解释了为什么 shim 全部使用
 `static inline`：未使用的静态函数在 `-Wall` 下会报警。
 
 ## 8. 实测数据
