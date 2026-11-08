@@ -1,0 +1,87 @@
+/*
+ * Dict - the Redis 7.2.x dict contract (S0 skeleton).
+ *
+ * This unit is the public contract only: handle aliases and trait signatures.
+ * The `map trait ... for type ...` blocks and the shim land at S2, so this file
+ * is intentionally not compilable yet -- importing it gets the reader the exact
+ * method list in docs/design.md, nothing more.
+ *
+ * Two monomorphic shapes:
+ *
+ *   DictStrPtr *  borrowed char * key -> borrowed void * value
+ *   DictIntPtr *  int key             -> borrowed void * value
+ *
+ * Redis dict stores POINTERS ONLY. The package never copies a key or a value:
+ *   - a key must outlive its entry and must not be modified after put(), because
+ *     the hash is computed at insert time;
+ *   - a value is borrowed; clear() / release() never free the pointee;
+ *   - an int key lives in a 4-byte slot allocated by the shim and released by
+ *     the dictType key destructor.
+ *
+ * Rehashing is incremental and the iterator is a safe iterator, so
+ * removeCurrent() may be used while iterating.
+ *
+ * OOM is abort-on-OOM, matching Redis zmalloc: dict.c has no NULL-check path for
+ * allocation, so there is no soft-failure contract. See docs/design.md §6.
+ *
+ * Every handle is released explicitly. There is no `Drop`: a built-in Drop is
+ * emitted `static`, so a package unit cannot destroy a caller's value.
+ */
+namespace dict;
+
+pub type DictStrPtr = struct ct_dict_strptr;
+pub type DictIntPtr = struct ct_dict_intptr;
+pub type DictStrPtrIter = struct ct_dict_strptr_iter;
+pub type DictIntPtrIter = struct ct_dict_intptr_iter;
+
+/* Receiveless constructors. The process-wide hash seed is initialized from
+ * mt19937-64 on first use; there is no setter because dict's dictType carries no
+ * per-table seed. */
+pub trait Lib {
+    DictStrPtr *newStrPtr();
+    DictIntPtr *newIntPtr();
+}
+
+pub trait StrPtrDict {
+    DictStrPtr *put(const char *key, void *value);
+    int get(const char *key, void **out);
+    int del(const char *key);
+
+    int len();
+    DictStrPtr *clear();
+    DictStrPtr *reserve(int buckets);
+
+    int status();
+    DictStrPtrIter *iter();
+    void release();
+}
+
+pub trait StrPtrIter {
+    int next();
+    char *key();
+    void *value();
+    int removeCurrent();
+    void release();
+}
+
+pub trait IntPtrDict {
+    DictIntPtr *put(int key, void *value);
+    int get(int key, void **out);
+    int del(int key);
+
+    int len();
+    DictIntPtr *clear();
+    DictIntPtr *reserve(int buckets);
+
+    int status();
+    DictIntPtrIter *iter();
+    void release();
+}
+
+pub trait IntPtrIter {
+    int next();
+    int key();
+    void *value();
+    int removeCurrent();
+    void release();
+}

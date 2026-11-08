@@ -1,0 +1,13 @@
+/*
+ * DictTypes - the status codes the CT side compares against.
+ *
+ * Only enums live here: a `.m.ct` cannot declare an enum, and a consumer that
+ * imports only `dict::Dict` does not see these constants. Import both units.
+ */
+namespace dict;
+
+pub enum DictStatus {
+    DICT_OK        = 0,
+    DICT_NOT_FOUND = 1,
+    DICT_INVALID   = 2
+}
