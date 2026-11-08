@@ -29,8 +29,9 @@ int main(void)
 README 里的每个 `ct` 块都是完整程序：`tools/check.sh` 会逐个抽取、`ct build` 并运行，
 再把 stdout 与预期输出逐字比对。
 
-> **状态：0.1.0 已实现，未发布。** 包可编译、可安装、有测试与静态门禁；远端还没有
-> `v0.1.0` tag，`index/index` 无本包行。需求与契约以 [docs/design.md](docs/design.md)
+> **状态：0.1.0 已发布（轻量 tag `v0.1.0`）。** 包可编译、可安装、有测试与静态门禁；
+> 远端 `main` 与该 tag 已同步。`index/index` 尚无本包行——索引刷新是发布流程里独立的一步。
+> 需求与契约以 [docs/design.md](docs/design.md)
 > 为准，实现细节与门禁变异证据见 [docs/implementation.md](docs/implementation.md)。
 
 ## 1. 定位与边界
@@ -55,16 +56,16 @@ README 里的每个 `ct` 块都是完整程序：`tools/check.sh` 会逐个抽�
 
 | 项 | 值 |
 | --- | --- |
-| 包名 / 版本 | `dict` / `0.1.0`（未打 tag） |
+| 包名 / 版本 | `dict` / `0.1.0`（轻量 tag `v0.1.0`） |
 | 许可 | BSD-3-Clause（Redis 7.2.x），见 [LICENSE](LICENSE) |
 | 上游 | redis/redis，基线 tag `7.2.4`（`src/`） |
 | 编译器 | `requires = ct >= 0.20.3`（`pub type` 与 OO 映射按 ct v0.20.3 实测） |
 | 包依赖 | 无 |
 | 链接 | `ldflags` 编译 `dict.c` / `siphash.c` / `zmalloc.c` / `mt19937-64.c` / `dict/seed.c` |
 
-**未发布状态**：本仓库没有 `v*` tag。`index/index` 无本包行；`index/packages.txt` 中的行
-保持注释（`refresh-index.sh` 遇到无 tag 仓库会整体失败）；`tools/repos.txt` 的 `tag` 列写 `-`。
-首个 tag 推送时取消 `index/packages.txt` 的注释。
+**发布状态**：轻量 tag `v0.1.0` 已推送到 `github.com:ct-pkg/dict`，与 `main` 指向同一提交。
+`index/index` 的收录（`index/packages.txt` 取消注释、`tools/repos.txt` 的 `tag` 列由 `-` 改为
+`v0.1.0`）由索引刷新步骤单独执行，不在本仓库内。
 
 **许可边界**：只允许 Redis **7.2 及更早**（BSD-3-Clause）。7.4+ 是 RSALv2/SSPL，8.0+ 是
 AGPLv3，不得引入。`COPYING` 与源文件版权头必须逐字保留；本包不是 Redis 官方发行版。
@@ -315,7 +316,7 @@ int main(void)
 
 ## 10. 版本与变更记录
 
-### 0.1.0（2026-11-08，未发布）
+### 0.1.0（2026-11-08，轻量 tag `v0.1.0`）
 
 - 实现：Redis `7.2.4` 的 `dict` 抽取到 `third_party/`，shim + 4 个 `pub type` + 5 个 trait
   全部落地；`ct build` 可编译，`ct get` / `ct install` 的安装布局可构建。
@@ -347,4 +348,4 @@ int main(void)
   README 结构与 `ct` 块逐个编译运行、安装布局与 `tests/run.sh`；每个门禁类别都有变异
   测试记录（[docs/implementation.md](docs/implementation.md) §7）。
 - 文档：新增 `docs/implementation.md`；README 术语表位于「限制」之前（§7）。
-- 未打 tag、未 push。
+- 发布：轻量 tag `v0.1.0` 已推送；`index/` 由索引刷新步骤单独更新。

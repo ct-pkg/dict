@@ -13,7 +13,7 @@
 | CT 测试 | `unit` 68、`iterator` 343、`rehash` 16、`chain` 17，共 444 条断言 |
 | C 门禁 | `slots.c` 分配账目 + 增量 rehash 行为（1536）；`oom.c` 四路可注入 OOM（4）；`gen.c` ASan generation 守卫 + `pauserehash` 恢复（12）；`multi_tu` 双 TU 播种门禁（20 次） |
 | 静态门禁 | `tools/check.sh` 共 91 项；`tests/run.sh` 另设每套件断言数下限（§7 M23） |
-| 发布 | 未打 tag、未 push；`index/` 未改；交付物已提交（S1） |
+| 发布 | 轻量 tag `v0.1.0` 已推送并与 `main` 同指；`index/` 未改（由索引刷新步骤执行） |
 
 ## 2. 上游来源与完整性
 
@@ -304,7 +304,7 @@ shim-only TU 用 `-femit-all-decls`（clang 专用，gcc 会拒绝该选项，�
 
 ## 9. 未做与边界
 
-- 未打 tag、未 push、未改 `index/`。
+- 已打轻量 tag `v0.1.0` 并随 `main` 推送；未改 `index/`。
 - 未暴露 `dictScan`、进程级 rehash 开关、OOM handler 注册。
 - 未新增第三种键值形状；新增需补 `dictType`、哈希/比较、键槽策略与 14 行 mapping。
 - Q1–Q4 均已按裁决落地：键复制并归表（覆盖保留首个副本）、`reserve` 按成因分化、

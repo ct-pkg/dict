@@ -441,10 +441,10 @@ else
     bad "README C type leak" "see lines"
     printf '%s\n' "$leaks" | head -5 >&2
 fi
-if grep -q '未发布' "$pkg/README.md" && grep -q 'third_party/' "$pkg/README.md"; then
-    ok "README states the unpublished status and the third_party layout"
+if grep -q 'tag `v0.1.0`' "$pkg/README.md" && grep -q 'third_party/' "$pkg/README.md"; then
+    ok "README states the release tag and the third_party layout"
 else
-    bad "README honesty" "must state the unpublished status and third_party/"
+    bad "README honesty" "must state the v0.1.0 tag and third_party/"
 fi
 echo
 

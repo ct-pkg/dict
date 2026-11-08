@@ -1,7 +1,8 @@
 # dict 模块需求与设计（S0）
 
 - 日期：2026-11-08
-- 状态：**S2 已实现**。可编译、可测、可安装；未打 tag（本轮不发布）
+- 状态：**S2 已实现并发布**。轻量 tag `v0.1.0` 已推送，可编译、可测、可安装；
+  `index/` 由索引刷新步骤单独更新
 - 目标包：`dict`（`ct-pkg/dict`），仓库 https://github.com/ct-pkg/dict
 - 上游：https://github.com/redis/redis ，核对基线 tag `7.2.4`（源码在 `src/`）
 - 选型依据：`ct/docs/design/map-options.md`（提交 `c568c71`）§3.C / §5 / §6.S2
@@ -333,7 +334,8 @@
 - README 10 节骨架填满；所有代码块实测后写入，输出逐字一致。
 - `ct get` / `ct install` 安装态验证：`third_party/` 被完整拷贝（目录名不能是 `vendor`），
   `ldflags` 的 4 个 `.c` 都能找到。
-- 未发布：`index/packages.txt` 保持注释，不打 tag、不 push（Q1–Q4 落地后的状态）。
+- 发布：轻量 tag `v0.1.0` 已随 `main` 推送；`index/packages.txt` 的收录由索引刷新步骤
+  单独执行（不在本仓库内）。
 
 ---
 

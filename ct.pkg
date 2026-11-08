@@ -18,9 +18,9 @@
 # is RSALv2/SSPL and 8.0+ is AGPLv3, none of which may be vendored here.
 # See LICENSE and third_party/README.md.
 #
-# Unreleased: `version = 0.1.0` is the declared first version, not a tag. No
-# `v0.1.0` exists on the remote yet, so `tools/repos.txt` records the tag as `-`
-# and the `index/packages.txt` line stays commented until the tag is pushed.
+# Released: `version = 0.1.0` is the first tagged release (`v0.1.0`, lightweight
+# tag on `main`). The index entry (`tools/repos.txt`, `index/packages.txt`) is
+# updated by the separate index refresh step.
 name = dict
 version = 0.1.0
 licence = BSD-3-Clause
