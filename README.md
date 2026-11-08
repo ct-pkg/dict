@@ -298,7 +298,8 @@ int main(void)
 - **遍历中 `clear()` / `release()` 会作废迭代器**（generation 守卫）：句柄维护一个
   代数计数，`clear()` / `release()` 自增；迭代器记住创建时的计数，`next()` / `key()` /
   `value()` 发现不一致即返回 0。这两个操作因此不会造成 use-after-free，但迭代器也
-  不会继续给出条目。`tests/gen.c` 在 ASan 下锁定该语义。
+  不会继续给出条目。`tests/gen.c` 在 ASan 下锁定该语义。**有效性只看 `next()`**：
+  `value()==0` 也可能是合法的 NULL 值，不要用它判断迭代器是否还有效。
 - **值仍借用**：键由表复制持有，值不复制、不释放；值对象必须活得比条目久。
 - **覆盖不释放旧值**：`put` 命中已有键时只替换值指针，旧值需调用方自行回收；
   键副本保留第一次插入的那份（§5.2）。
@@ -325,7 +326,10 @@ int main(void)
   shim 头只留声明；同一进程内无论多少个调用方 TU，都只播种一次。`tests/multi_tu_a.c` /
   `multi_tu_b.c` 组成双 TU 门禁，连续 20 次"第二张表建完后回读第一张表"必须全中。
 - 迭代器失效（R1）：generation 守卫——`clear()` / `release()` 自增句柄代数，迭代器
-  `next()` / `key()` / `value()` 发现代数不符即返回 0；ASan 门禁 `tests/gen.c`（8 条）。
+  `next()` / `key()` / `value()` 发现代数不符即返回 0；`iter_release()` 对失效迭代器
+  只释放自身内存，不调用 `dictReleaseIterator()`，否则会把 `clear()` 已复位的
+  `pauserehash` 减成 -1、让这张表永久停止 rehash。ASan 门禁 `tests/gen.c`（12 条）同时
+  覆盖这两种失效和 rehash 恢复。
 - 测试：`tests/unit.ct`（68）、`iterator.ct`（343）、`rehash.ct`（16）、`chain.ct`（17）
   共 444 条断言；`tests/slots.c` 做分配账目差分（含 5 条增量 rehash 行为断言），
   `tests/oom.c` 四路验证（put / constructor / reserve 真实 OOM 均 abort，逻辑拒绝不 abort），
@@ -335,11 +339,12 @@ int main(void)
   `0 B`；字符串短键 `48000 B` / 长键 `160000 B`，差 `112000 B` 证明键被复制。注意
   `reserve=131072 B` 是**字节**（16384 个桶指针），与 `d.reserve(131072)` 的**桶数**不是
   同一单位。
-- 门禁：`tests/run.sh` 对每个套件设断言数下限（68 / 343 / 16 / 17 / 1536 / 4 / 8），
+- 门禁：`tests/run.sh` 对每个套件设断言数下限（68 / 343 / 16 / 17 / 1536 / 4 / 12），
   另有 `multi_tu`（20 次）与 demo；低于下限即红，掏空 `check()` 无法蒙混。`tools/check.sh`
-  覆盖交付文件集与 `git ls-files` 跟踪、`ct.pkg` 字段、第三方 sha256、许可边界、OO 公开面、
-  shim 约束（禁止任何非 `static inline` 的有状态定义）、分配器纪律、README 结构与
-  `ct` 块逐个编译运行、安装布局与 `tests/run.sh`；每个门禁类别都有变异测试记录
-  （[docs/implementation.md](docs/implementation.md) §7）。
+  覆盖交付文件集与 `git ls-files` 跟踪（含“不得有未跟踪文件”，安装检查从
+  `git archive HEAD` 的干净树执行）、`ct.pkg` 字段、第三方 sha256、许可边界、OO 公开面、
+  shim 约束（禁止任何非 `static inline` 的有状态定义，文本 + `nm` 双检）、分配器纪律、
+  README 结构与 `ct` 块逐个编译运行、安装布局与 `tests/run.sh`；每个门禁类别都有变异
+  测试记录（[docs/implementation.md](docs/implementation.md) §7）。
 - 文档：新增 `docs/implementation.md`；README 术语表位于「限制」之前（§7）。
 - 未打 tag、未 push。

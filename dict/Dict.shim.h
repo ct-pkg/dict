@@ -471,7 +471,12 @@ static inline void ct_dict_strptr_iter_release(ct_dict_strptr_iter *it)
         return;
     }
     if (it->it) {
-        if (it->gen->dead) {
+        /* dictReleaseIterator() would decrement pauserehash. If clear() ran,
+         * dictEmpty() already reset the pause counter to 0 and a stale
+         * iterator must not touch it again (it would land on -1 and every
+         * later rehash step would be skipped forever). If release() ran, the
+         * dict is gone and only the iterator allocation may be freed. */
+        if (it->gen->dead || !ct_dict_gen_valid(it->gen, it->seen)) {
             zfree(it->it);
         } else {
             dictReleaseIterator(it->it);
@@ -664,7 +669,9 @@ static inline void ct_dict_intptr_iter_release(ct_dict_intptr_iter *it)
         return;
     }
     if (it->it) {
-        if (it->gen->dead) {
+        /* Same guard as the str shape: clear() reset pauserehash to 0, so a
+         * stale iterator must be freed without dictReleaseIterator(). */
+        if (it->gen->dead || !ct_dict_gen_valid(it->gen, it->seen)) {
             zfree(it->it);
         } else {
             dictReleaseIterator(it->it);

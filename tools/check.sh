@@ -10,8 +10,8 @@
 # mutation test in docs/implementation.md; a green run here is the result, not
 # the evidence.
 #
-#   1. the delivered file set exists and every delivered file is tracked by git
-#      (`git ls-files --error-unmatch`), so a clean clone is the package;
+#   1. the delivered file set exists, every delivered file is tracked by git,
+#      and there is no untracked file at all (a clean clone is the package);
 #   2. ct.pkg declares the five expected keys, requires ct >= 0.20.3, points at
 #      third_party/ (never vendor/), and links the four upstream sources plus
 #      dict/seed.c;
@@ -21,10 +21,12 @@
 #   5. the public surface is OO: no free `pub fn`, exactly four handle aliases,
 #      no dict/C type names in trait signatures, every trait method mapped once,
 #      and put/clear/reserve return the receiver;
-#   6. the shim has no mutable static state (every definition is `static inline`
-#      except the immutable dictType tables), the hash seed is only *declared*
-#      there and defined in seed.c, it uses the safe iterator, and it
-#      undefines the upstream DICT_OK/DICT_ERR macros before the status enum;
+#   6. the shim has no mutable static state (text scan with [[:space:]], a ban
+#      on `static` in #define, and an nm check on a shim-only object built with
+#      -femit-all-decls where supported; only the two immutable dictType symbols
+#      are allowed), the hash seed is only *declared* there and defined in
+#      seed.c, it uses the safe iterator, and it undefines the upstream
+#      DICT_OK/DICT_ERR macros before the status enum;
 #   7. dict.c calls no raw allocator: OOM therefore goes through zmalloc's
 #      handler (proved behaviourally by tests/oom.c);
 #   8. README has exactly ten numbered sections in the agreed order, the
@@ -33,8 +35,9 @@
 #   9. every `ct` block in README is a complete program: it is extracted, built
 #      with -Wall -Wextra, run, and its stdout is compared with the expected
 #      output recorded here;
-#  10. a real `ct get` + `ct install` copies third_party/ and the installed demo
-#      builds, runs and matches demo/expected.out;
+#  10. a real `ct get` + `ct install` from a `git archive HEAD` tree copies
+#      third_party/ and the installed demo builds, runs and matches
+#      demo/expected.out;
 #  11. tests/run.sh passes.
 #
 # Exit status: 0 only when every check passes.
@@ -45,6 +48,16 @@ set -u
 
 pkg="$(cd "$(dirname "$0")/.." && pwd)"
 CT="${CT:-/Users/samxx/.local/bin/ct}"
+CC="${CC:-cc}"
+# clang drops static data that the TU never references, which would hide a
+# split-line `static` declaration from nm. -femit-all-decls forces every
+# declaration into the object; gcc already keeps them and rejects the flag, so
+# probe for it instead of assuming a compiler.
+emit_all=""
+if printf 'int ct_dict_emit_probe;\n' |
+        "$CC" -x c -c -femit-all-decls -o /dev/null - >/dev/null 2>&1; then
+    emit_all="-femit-all-decls"
+fi
 
 pass=0
 fail=0
@@ -93,6 +106,12 @@ else
         ok "every delivered file is tracked by git"
     else
         bad "git delivery" "delivered files are not tracked:$untracked"
+    fi
+    others=$(git -C "$pkg" ls-files --others --exclude-standard)
+    if [ -z "$others" ]; then
+        ok "no untracked files (a clean clone is complete)"
+    else
+        bad "untracked files" "a clean clone would miss: $(printf '%s' "$others" | tr '\n' ' ')"
     fi
 fi
 echo
@@ -281,13 +300,47 @@ echo "== shim =="
 # would exist once per TU and the second one would reseed the process-global.
 # Mutable configuration tables are not allowed either; the two dictType values
 # are immutable and are the only non-inline definitions permitted.
-bad_static=$(awk '/^static / && !/^static inline / && !/^static dictType / { print NR": "$0 }' "$pkg/dict/Dict.shim.h")
-bad_state=$(grep -nE '^[[:space:]]+static[[:space:]]' "$pkg/dict/Dict.shim.h")
-if [ -z "$bad_static" ] && [ -z "$bad_state" ]; then
-    ok "no mutable static state in the shim (static inline or immutable dictType only)"
+# Whitespace is matched with [[:space:]] so a tab or newline cannot hide a
+# declaration, a #define that expands to state is rejected, and the object file
+# is inspected with nm so a spelling that slips past the text pass still fails.
+bad_static=$(awk '
+    /^[[:space:]]*static[[:space:]]/ {
+        line = $0
+        sub(/^[[:space:]]*/, "", line)
+        if (line !~ /^static[[:space:]]+inline[[:space:]]/ &&
+            line !~ /^static[[:space:]]+dictType[[:space:]]/) {
+            print NR": "$0
+        }
+    }
+' "$pkg/dict/Dict.shim.h")
+bad_define=$(grep -nE '^[[:space:]]*#[[:space:]]*define.*[[:space:]]static[[:space:]]' "$pkg/dict/Dict.shim.h")
+if [ -z "$bad_static" ] && [ -z "$bad_define" ]; then
+    ok "no mutable static state in the shim text (static inline / dictType only)"
 else
-    bad "shim state" "non-static-inline definition or function-local static"
-    printf '%s\n%s\n' "$bad_static" "$bad_state" >&2
+    bad "shim state" "non-static-inline definition, function-local static, or static in a #define"
+    printf '%s\n%s\n' "$bad_static" "$bad_define" >&2
+fi
+printf '#include "Dict.shim.h"\nint ct_dict_shim_tu_anchor(void) { return 0; }\n' >"$work/shim_tu.c"
+if (cd "$work" && "$CC" -std=c99 -Wall -Wextra $emit_all -I "$pkg/third_party" -I "$pkg/dict" \
+        -c shim_tu.c -o shim_tu.o) >"$work/shim_tu.log" 2>&1; then
+    bad_syms=$(nm -a "$work/shim_tu.o" 2>/dev/null | awk '
+        $2 ~ /^[bBdD]$/ {
+            name = $3
+            sub(/^_/, "", name)
+            if (name != "ct_dict_str_type" && name != "ct_dict_int_type" &&
+                name !~ /^ltmp[0-9]+$/) {
+                print name
+            }
+        }
+    ')
+    if [ -z "$bad_syms" ]; then
+        ok "shim-only TU has no local data symbols beyond the dictType tables"
+    else
+        bad "shim symbols" "unexpected local data symbols: $bad_syms"
+    fi
+else
+    bad "shim-only TU compiles" "the shim must compile on its own"
+    sed -n '1,30p' "$work/shim_tu.log" >&2
 fi
 if grep -qE '^void ct_dict_seed_once\(void\);$' "$pkg/dict/Dict.shim.h" &&
    ! grep -qE 'ct_dict_seed_once\(void\)[[:space:]]*\{' "$pkg/dict/Dict.shim.h"; then
@@ -452,17 +505,34 @@ if ! command -v "$CT" >/dev/null 2>&1 && [ ! -x "$CT" ]; then
 else
     printf 'name = dictconsumer\nversion = 0.1.0\nlicence = BSD-3-Clause\n' >"$work/ct.pkg"
     install_ok=1
-    if ! (cd "$work" && "$CT" get "$pkg") >"$work/get.log" 2>&1; then
-        bad "ct get" "see log"
-        cat "$work/get.log" >&2
+    # Install from HEAD, not from the working tree: the promise is that a clean
+    # clone builds. An untracked header that the shim includes must fail here
+    # even if the developer's tree happens to contain it.
+    archive="$work/archive"
+    rm -rf "$archive"
+    mkdir -p "$archive"
+    if ! git -C "$pkg" archive --format=tar HEAD >"$work/archive.tar" 2>"$work/archive.log"; then
+        bad "git archive" "see log"
+        cat "$work/archive.log" >&2
         install_ok=0
-    elif [ ! -f "$work/vendor/dict/third_party/dict.c" ] ||
-         [ ! -f "$work/vendor/dict/third_party/zmalloc.h" ]; then
-        bad "ct get copy" "third_party/ did not survive the install copy"
-        ls -R "$work/vendor/dict" >&2
+    elif ! tar -xf "$work/archive.tar" -C "$archive" 2>>"$work/archive.log"; then
+        bad "git archive extract" "see log"
+        cat "$work/archive.log" >&2
         install_ok=0
-    else
-        ok "ct get copies third_party/ into vendor/dict"
+    fi
+    if [ "$install_ok" -eq 1 ]; then
+        if ! (cd "$work" && "$CT" get "$archive") >"$work/get.log" 2>&1; then
+            bad "ct get" "see log"
+            cat "$work/get.log" >&2
+            install_ok=0
+        elif [ ! -f "$work/vendor/dict/third_party/dict.c" ] ||
+             [ ! -f "$work/vendor/dict/third_party/zmalloc.h" ]; then
+            bad "ct get copy" "third_party/ did not survive the install copy"
+            ls -R "$work/vendor/dict" >&2
+            install_ok=0
+        else
+            ok "ct get copies third_party/ into vendor/dict"
+        fi
     fi
     if [ "$install_ok" -eq 1 ]; then
         if ! (cd "$work" && "$CT" install) >"$work/install.log" 2>&1; then

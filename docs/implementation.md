@@ -11,8 +11,8 @@
 | 编译 | `ct build` 通过；`-std=c11 -Wall -Wextra` 与 ct 的 `-std=c99 -Wall -Wextra` 均零警告 |
 | 安装布局 | 真实 `ct get` / `ct install` 复制后构建、运行 demo，输出逐字匹配 |
 | CT 测试 | `unit` 68、`iterator` 343、`rehash` 16、`chain` 17，共 444 条断言 |
-| C 门禁 | `slots.c` 分配账目 + 增量 rehash 行为（1536）；`oom.c` 四路可注入 OOM（4）；`gen.c` ASan generation 守卫（8）；`multi_tu` 双 TU 播种门禁（20 次） |
-| 静态门禁 | `tools/check.sh` 共 89 项；`tests/run.sh` 另设每套件断言数下限（§7 M23） |
+| C 门禁 | `slots.c` 分配账目 + 增量 rehash 行为（1536）；`oom.c` 四路可注入 OOM（4）；`gen.c` ASan generation 守卫 + `pauserehash` 恢复（12）；`multi_tu` 双 TU 播种门禁（20 次） |
+| 静态门禁 | `tools/check.sh` 共 91 项；`tests/run.sh` 另设每套件断言数下限（§7 M23） |
 | 发布 | 未打 tag、未 push；`index/` 未改；交付物已提交（S1） |
 
 ## 2. 上游来源与完整性
@@ -172,8 +172,14 @@ shim 头会变成每个 TU 一份（B1）。文件名保持短（`seed.c`）：c
 - **R1 遍历中 `clear()` / `release()` 的 UAF**：句柄新增引用计数的 generation 计数器；
   `clear()` / `release()` 自增，迭代器记录创建时的值，`next()` / `key()` / `value()` 发现
   不一致即返回 0；`release()` 置 dead，迭代器释放时不再对被释放的 dict 调
-  `dictReleaseIterator`。语义写入 README §9。门禁：`tests/gen.c` 在 ASan 下 8 条断言；
-  变异 M26 删除 generation 比较后 ASan 报 heap-use-after-free。
+  `dictReleaseIterator`。`clear()` 走 `dictEmpty`，它把 `pauserehash` 复位为 0；失效
+  迭代器若仍调 `dictReleaseIterator`，`dictResumeRehashing` 会把它减成 -1，而
+  `_dictRehashStep` 要求精确等于 0，这张表就永久停在 rehash 中、`reserve()` 永久
+  `DICT_INVALID`。修复：`iter_release` 的条件是 `gen->dead || !gen_valid(...)`，
+  命中时只 `zfree(it->it)`。语义写入 README §9。门禁：`tests/gen.c` 在 ASan 下 12 条
+  断言（含 `pauserehash == 0`、rehash 完成、`reserve()` 恢复）；变异 M26 删除
+  generation 比较后 ASan 报 heap-use-after-free，变异 M30 只留 `gen->dead` 判断时
+  `pauserehash` 停在 -1、rehash 永不完成、`reserve()` 失败。
 
 ## 6. OOM 分支逐条处置
 
@@ -228,10 +234,18 @@ M14 变异把构造器契约改成“返回 0”，`oom.c` 立即变红；M22 �
 | M27 | README 代码块必须编译且输出正确 | 把 README §3 的 `printf("len: ...")` 改成多打印 1 | `FAIL README block 2 output: see diff`：`len: 3` → `len: 4`、`len: 2` → `len: 3` |
 | M28 | 交付物必须被 git 跟踪 | 在干净副本里 `git rm --cached dict/seed.c` | `FAIL git delivery: delivered files are not tracked: dict/seed.c` |
 | M29 | shim 不得有有状态定义 | 在 shim 顶部加 `static int ct_dict_seeded = 0;` | `FAIL shim state: non-static-inline definition or function-local static`（`59: static int ct_dict_seeded = 0;`） |
+| M30 | 失效迭代器释放不得把 `pauserehash` 减成 -1 | 两处 `iter_release` 的条件改回只判断 `it->gen->dead` | `FAIL clear() + iterator release leaves pauserehash at 0`、`FAIL rehashing still completes after clear()`、`FAIL reserve() works after clear()`（`GEN passed=9 failed=3`） |
+| M31 | 制表符不能绕过 shim 状态检查 | 在 shim 顶部加 `static<TAB>int ct_dict_probe_latch = 0;` | `FAIL shim state: ...`（`1: static	int ct_dict_probe_latch = 0;`）+ `FAIL shim symbols: unexpected local data symbols: ct_dict_probe_latch` |
+| M32 | `#define` 不得展开出 static 状态 | 加 `#define CT_DICT_PROBE_LATCH static int ct_dict_probe_latch = 0;` | `FAIL shim state: non-static-inline definition, function-local static, or static in a #define` |
+| M33 | 干净 clone 必须完整（未跟踪文件也算交付） | 新增未跟踪的 `dict/aux.h`，并把 `#include "aux.h"` 提交进 shim（模拟“本地能编、干净 clone 编不了”） | `FAIL untracked files: a clean clone would miss: dict/aux.h` + `FAIL install-layout build`：`vendor/dict/dict/Dict.shim.h:1:10: fatal error: 'aux.h' file not found` |
+| M34 | 文本扫描漏掉的写法必须由 nm 兜底 | 把 `static` 单独一行、下一行写 `int ct_dict_nm_probe = 0;`（逐行正则看不到 `static[[:space:]]`） | `FAIL shim symbols: unexpected local data symbols: ct_dict_nm_probe`（文本扫描通过，nm 变红） |
 
 变异均在 `/tmp/dict-mut` 的整包副本上执行，未改动交付树；每条记录来自对应
-`/tmp/m-m*.log` 的实际输出。M4 的“警告即失败”也解释了为什么 shim 全部使用
-`static inline`：未使用的静态函数在 `-Wall` 下会报警。
+`/tmp/m*.log` 的实际输出。M4 的“警告即失败”也解释了为什么 shim 全部使用
+`static inline`：未使用的静态函数在 `-Wall` 下会报警。M31/M34 说明只靠文本正则不够：
+shim-only TU 用 `-femit-all-decls`（clang 专用，gcc 会拒绝该选项，故先用探针探测）强制
+把未引用的静态数据也写进目标文件，再由 `nm -a` 只放行两个 `dictType` 表（以及编译器
+自己的 `ltmp*` 临时符号）。
 
 ## 8. 实测数据
 
@@ -244,7 +258,7 @@ M14 变异把构造器契约改成“返回 0”，`oom.c` 立即变红；M22 �
   ok   chain (SUMMARY passed=17 failed=0)
   ok   slots (SLOTS passed=1536 failed=0)
   ok   oom (OOM passed=4 failed=0)
-  ok   gen (GEN passed=8 failed=0)
+  ok   gen (GEN passed=12 failed=0)
   ok   multi_tu (20 runs)
   ok   demo
   9 suites, 0 failure(s)
@@ -252,7 +266,7 @@ M14 变异把构造器契约改成“返回 0”，`oom.c` 立即变红；M22 �
 
   四个 CT 套件合计 444 条 CT 断言；`slots` 的 1536 来自循环内的逐条 `check()`，
   是同一序列下可复现的精确值。`tests/run.sh` 对每个套件分别设了下限
-  （68 / 343 / 16 / 17 / 1536 / 4 / 8），低于下限即红（M23）。
+  （68 / 343 / 16 / 17 / 1536 / 4 / 12），低于下限即红（M23）。
 
 - 分配账目（`tests/slots.c`，`zmalloc_used_memory()` 精确值，不是阈值）：
 

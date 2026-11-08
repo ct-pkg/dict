@@ -33,6 +33,7 @@ int main(void)
     ct_dict_intptr_iter *it;
     int value = 7;
     int i;
+    int spin = 0;
 
     /* ---------------- clear() during iteration ---------------- */
 
@@ -61,6 +62,39 @@ int main(void)
     check(ct_dict_intptr_iter_remove_current(it) == CT_DICT_NOT_FOUND,
           "removeCurrent() after release does nothing");
     ct_dict_intptr_iter_release(it);
+
+    /* ---------------- clear() + iterator release must not stop rehashing --- */
+
+    /* dictGetSafeIterator() pauses rehashing; dictEmpty() resets the pause
+     * counter to 0. Releasing the stale iterator afterwards must NOT call
+     * dictReleaseIterator(), whose dictResumeRehashing() decrements -- that
+     * would leave pauserehash at -1, and _dictRehashStep() only runs when it
+     * is exactly 0. The table would then never finish a rehash and reserve()
+     * would be refused forever. */
+    h = ct_dict_intptr_new();
+    for (i = 0; i < 16; i = i + 1) {
+        ct_dict_intptr_put(h, i, 0);
+    }
+    it = ct_dict_intptr_new_iter(h);
+    check(ct_dict_intptr_iter_next(it) == 1, "next starts the guarded iterator");
+    ct_dict_intptr_clear(h);
+    ct_dict_intptr_iter_release(it);
+    for (i = 0; i < 5000; i = i + 1) {
+        ct_dict_intptr_put(h, i, 0);
+    }
+    /* 5000 entries leave the 4096 -> 8192 doubling still in flight: an
+     * incremental rehash drains one bucket per operation, so drive the
+     * remaining steps with reads. With pauserehash at -1 this loop never
+     * finishes. */
+    while (dictIsRehashing(h->d) && spin < 200000) {
+        ct_dict_intptr_get(h, spin % 5000, 0);
+        spin = spin + 1;
+    }
+    check(h->d->pauserehash == 0, "clear() + iterator release leaves pauserehash at 0");
+    check(dictIsRehashing(h->d) == 0, "rehashing still completes after clear()");
+    ct_dict_intptr_reserve(h, 65536);
+    check(ct_dict_intptr_status(h) == CT_DICT_OK, "reserve() works after clear()");
+    ct_dict_intptr_release(h);
 
     printf("GEN passed=%d failed=%d\n", passed, failed);
     return failed != 0;

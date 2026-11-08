@@ -224,7 +224,7 @@ run_ct_suite rehash "$PKG/tests/rehash.ct" 16
 run_ct_suite chain "$PKG/tests/chain.ct" 17
 run_c_gate slots "$PKG/tests/slots.c" 1536
 run_c_gate oom "$PKG/tests/oom.c" 4
-run_asan_gate gen "$PKG/tests/gen.c" 8
+run_asan_gate gen "$PKG/tests/gen.c" 12
 run_multi_tu
 run_demo
 
