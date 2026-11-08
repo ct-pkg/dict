@@ -1,0 +1,7 @@
+str len: 3
+two: 2
+str iter: seen=3 sum=6
+after remove: len=2 two=1
+clear returns receiver: 1 len: 0
+int len: 3 one: 3
+int iter: seen=3 keysum=1

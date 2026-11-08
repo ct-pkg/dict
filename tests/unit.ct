@@ -1,0 +1,225 @@
+/*
+ * unit.ct - DictStrPtr / DictIntPtr contract: values, status codes, borrowed
+ * keys, reserve and the limits that are cheap to hit.
+ *
+ * Run through tests/run.sh, which requires `SUMMARY passed=N failed=0` and a
+ * warning-free build.
+ *
+ * License: BSD-3-Clause (see LICENSE).
+ */
+
+#include <stdio.h>
+
+import dict::DictTypes;
+import dict::Dict;
+
+int passed = 0;
+int failed = 0;
+
+void check(int cond, const char *name)
+{
+    if (cond) {
+        passed = passed + 1;
+        return;
+    }
+    failed = failed + 1;
+    printf("FAIL %s\n", name);
+}
+
+/*
+ * Builds "key" at a caller-chosen address so the test can prove that two
+ * distinct pointers with equal bytes are one entry, and that the entry keeps
+ * the first pointer.
+ */
+void fill_key(char *buf)
+{
+    char *src = "key";
+    int i;
+    for (i = 0; i < 4; i = i + 1) {
+        buf[i] = src[i];
+    }
+}
+
+int main(void)
+{
+    DictStrPtr *d;
+    DictIntPtr *m;
+    DictStrPtrIter *it;
+    DictStrPtr *nullh;
+    void *out;
+    int one;
+    int two;
+    int three;
+    int i;
+    char key_a[8];
+    char key_b[8];
+    char *first_key;
+
+    one = 1;
+    two = 2;
+    three = 3;
+
+    /* ---------------- creation and the empty table ---------------- */
+
+    d = dict::Lib.newStrPtr();
+    check(d != 0, "newStrPtr returns a handle");
+    m = dict::Lib.newIntPtr();
+    check(m != 0, "newIntPtr returns a handle");
+
+    check(d.len() == 0, "new table is empty");
+    check(d.status() == DICT_OK, "new table status is DICT_OK");
+    check(m.len() == 0, "new int table is empty");
+
+    /* ---------------- put / get / len ---------------- */
+
+    d.put("a", &one).put("b", &two).put("c", &three);
+    check(d.len() == 3, "three distinct keys give len 3");
+    check(d.status() == DICT_OK, "put leaves status DICT_OK");
+
+    out = 0;
+    check(d.get("b", &out) == DICT_OK, "get hit returns DICT_OK");
+    check(out == &two, "get hit hands out the stored value pointer");
+    check(d.status() == DICT_OK, "get hit leaves status DICT_OK");
+
+    out = &one;
+    check(d.get("missing", &out) == DICT_NOT_FOUND, "get miss returns DICT_NOT_FOUND");
+    check(out == &one, "get miss does not touch out");
+    check(d.status() == DICT_NOT_FOUND, "get miss records DICT_NOT_FOUND");
+
+    check(d.get("a", 0) == DICT_OK, "get with a null out is an existence test");
+
+    /* overwrite: one entry, new value */
+    d.put("a", &three);
+    check(d.len() == 3, "overwrite does not add an entry");
+    d.get("a", &out);
+    check(out == &three, "overwrite replaces the value");
+
+    /* ---------------- owned keys (copied) ---------------- */
+
+    fill_key(key_a);
+    fill_key(key_b);
+
+    d.clear();
+    d.put(key_a, &one);
+
+    it = d.iter();
+    check(it.next() == 1, "one entry is iterated");
+    first_key = it.key();
+    check(first_key != key_a, "the entry owns a copy, not the caller's key buffer");
+    check(first_key[0] == 'k' && first_key[3] == 0, "the owned copy has the same bytes");
+    it.release();
+
+    /* The pointer captured above must survive an overwrite: put() replaces the
+     * value in place and keeps the first owned key copy. Comparing against
+     * key_b as well would only prove it is not the second buffer; capturing the
+     * actual pointer distinguishes "kept the first copy" from "made a new one". */
+    d.put(key_b, &two);
+    check(d.len() == 1, "equal bytes at distinct addresses are one entry");
+    d.get("key", &out);
+    check(out == &two, "the value of the equal key was replaced");
+
+    it = d.iter();
+    check(it.next() == 1, "the overwritten entry is still iterated once");
+    check(it.key() == first_key, "overwriting keeps the first owned copy (same pointer)");
+    it.release();
+
+    /*
+     * Keys are copied, so the caller's buffer is not part of the table. It may
+     * be mutated or freed without affecting lookups. (If a stored key could be
+     * mutated, upstream would only make the OLD bytes unreachable; the NEW
+     * bytes might still hit when they mask to the same bucket. See Q4 in
+     * docs/implementation.md. The API now prevents that situation.)
+     */
+    key_a[0] = 'K';
+    check(d.get("key", &out) == DICT_OK, "mutating the caller's buffer does not affect the copy");
+    check(out == &two, "the copied key still returns the value");
+    d.put(key_a, &three);
+    check(d.len() == 2, "the mutated buffer now names a distinct key");
+    d.clear();
+
+    /* ---------------- del ---------------- */
+
+    d.put("x", &one).put("y", &two);
+    check(d.del("x") == DICT_OK, "del hit returns DICT_OK");
+    check(d.len() == 1, "del decrements len");
+    check(d.del("x") == DICT_NOT_FOUND, "del miss returns DICT_NOT_FOUND");
+    check(d.status() == DICT_NOT_FOUND, "del miss records DICT_NOT_FOUND");
+    check(d.del("y") == DICT_OK, "del the last entry works");
+    check(d.len() == 0, "table is empty after deleting everything");
+
+    /* ---------------- invalid arguments ---------------- */
+
+    d.put("keep", &one);
+    d.put(0, &two);
+    check(d.len() == 1, "put with a null key inserts nothing");
+    check(d.status() == DICT_INVALID, "put with a null key records DICT_INVALID");
+    check(d.get(0, &out) == DICT_INVALID, "get with a null key returns DICT_INVALID");
+    check(d.del(0) == DICT_INVALID, "del with a null key returns DICT_INVALID");
+
+    /* ---------------- reserve ---------------- */
+
+    check(d.reserve(0) == d, "reserve returns the receiver");
+    check(d.status() == DICT_INVALID, "reserve(0) is DICT_INVALID");
+    check(d.reserve(-4) == d, "reserve of a negative count returns the receiver");
+    check(d.status() == DICT_INVALID, "reserve(-4) is DICT_INVALID");
+
+    d.clear();
+    check(d.reserve(64) == d, "reserve(64) returns the receiver");
+    check(d.status() == DICT_OK, "reserve(64) on an empty table is DICT_OK");
+    check(d.reserve(64) == d, "a second reserve of the same size returns the receiver");
+    check(d.status() == DICT_INVALID, "reserve to the same exponent is DICT_INVALID");
+
+    for (i = 0; i < 100; i = i + 1) {
+        m.put(i, &one);
+    }
+    m.reserve(8);
+    check(m.status() == DICT_INVALID, "reserve below ht_used is DICT_INVALID");
+    m.clear();
+
+    /* ---------------- clear ---------------- */
+
+    check(d.clear() == d, "clear returns the receiver");
+    check(d.len() == 0, "clear empties the table");
+    check(d.status() == DICT_OK, "clear records DICT_OK");
+
+    /* ---------------- int keys ---------------- */
+
+    m.put(1, &one).put(2, &two).put(3, &three);
+    check(m.len() == 3, "int: three distinct keys give len 3");
+    check(m.get(2, &out) == DICT_OK, "int: get hit");
+    check(out == &two, "int: get hit hands out the value");
+    check(m.get(9, &out) == DICT_NOT_FOUND, "int: get miss");
+    check(m.status() == DICT_NOT_FOUND, "int: get miss records DICT_NOT_FOUND");
+
+    m.put(1, &three);
+    check(m.len() == 3, "int: overwrite does not add an entry");
+    m.get(1, &out);
+    check(out == &three, "int: overwrite replaces the value");
+
+    check(m.del(1) == DICT_OK, "int: del hit");
+    check(m.del(1) == DICT_NOT_FOUND, "int: del miss");
+    check(m.len() == 2, "int: del decrements len");
+
+    check(m.reserve(0) == m, "int: reserve returns the receiver");
+    check(m.status() == DICT_INVALID, "int: reserve(0) is DICT_INVALID");
+    check(m.clear() == m, "int: clear returns the receiver");
+    check(m.len() == 0, "int: clear empties the table");
+
+    m.release();
+
+    /* ---------------- null handles ---------------- */
+
+    nullh = 0;
+    check(nullh.len() == 0, "len on a null handle is 0");
+    check(nullh.status() == DICT_INVALID, "status on a null handle is DICT_INVALID");
+    check(nullh.clear() == 0, "clear on a null handle returns 0");
+    check(nullh.reserve(8) == 0, "reserve on a null handle returns 0");
+    check(nullh.iter() == 0, "iter on a null handle returns 0");
+    nullh.release();
+    check(1, "release on a null handle is a no-op");
+
+    d.release();
+
+    printf("SUMMARY passed=%d failed=%d\n", passed, failed);
+    return failed != 0;
+}

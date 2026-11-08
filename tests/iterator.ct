@@ -1,0 +1,202 @@
+/*
+ * iterator.ct - traversal, removeCurrent(), the end state, and what a safe
+ * iterator promises while the table changes underneath it.
+ *
+ * Run through tests/run.sh, which requires `SUMMARY passed=N failed=0` and a
+ * warning-free build.
+ *
+ * License: BSD-3-Clause (see LICENSE).
+ */
+
+#include <stdio.h>
+
+import dict::DictTypes;
+import dict::Dict;
+
+int passed = 0;
+int failed = 0;
+
+void check(int cond, const char *name)
+{
+    if (cond) {
+        passed = passed + 1;
+        return;
+    }
+    failed = failed + 1;
+    printf("FAIL %s\n", name);
+}
+
+int main(void)
+{
+    DictIntPtrIter *mit;
+    DictStrPtrIter *sit;
+    DictIntPtr *m;
+    DictStrPtr *d;
+    void *out;
+    char *names[10];
+    int vals[10];
+    int seen[200];
+    int i;
+    int n;
+    int sum;
+
+    /* ---------------- every key exactly once ---------------- */
+
+    m = dict::Lib.newIntPtr();
+    for (i = 0; i < 200; i = i + 1) {
+        seen[i] = 0;
+        m.put(i, 0);
+    }
+    n = 0;
+    sum = 0;
+    mit = m.iter();
+    while (mit.next()) {
+        if (mit.key() >= 0 && mit.key() < 200) {
+            seen[mit.key()] = seen[mit.key()] + 1;
+        }
+        n = n + 1;
+        sum = sum + mit.key();
+        check(mit.value() == 0, "a null value stays null through the iterator");
+    }
+    mit.release();
+    check(n == 200, "iterating 200 entries yields 200 steps");
+    check(sum == 19900, "every int key is visited (sum)");
+    for (i = 0; i < 200; i = i + 1) {
+        if (seen[i] != 1) {
+            check(0, "a key was visited zero times or more than once");
+            i = 200;
+        }
+    }
+    check(1, "each int key is visited exactly once");
+
+    /* next() past the end stays 0 */
+    mit = m.iter();
+    while (mit.next()) {
+    }
+    check(mit.next() == 0, "next() past the end is 0 (first repeat)");
+    check(mit.next() == 0, "next() past the end is 0 (second repeat)");
+    check(mit.removeCurrent() == DICT_NOT_FOUND, "removeCurrent past the end is DICT_NOT_FOUND");
+    check(mit.key() == 0, "int key() is 0 with no current entry");
+    check(mit.value() == 0, "value() is 0 with no current entry");
+    mit.release();
+
+    /* removeCurrent before the first next() */
+    mit = m.iter();
+    check(mit.removeCurrent() == DICT_NOT_FOUND, "removeCurrent before next() is DICT_NOT_FOUND");
+    mit.release();
+
+    /* ---------------- remove while iterating, then keep going ---------------- */
+
+    m.clear();
+    for (i = 0; i < 100; i = i + 1) {
+        m.put(i, 0);
+    }
+    n = 0;
+    mit = m.iter();
+    while (mit.next()) {
+        if (mit.key() % 2 == 1) {
+            check(mit.removeCurrent() == DICT_OK, "removeCurrent on a current entry is DICT_OK");
+            check(mit.value() == 0, "value() is 0 after removeCurrent");
+            n = n + 1;
+        }
+    }
+    mit.release();
+    check(n == 50, "50 odd keys were removed while iterating");
+    check(m.len() == 50, "len reflects the removals");
+    check(m.get(1, &out) == DICT_NOT_FOUND, "a removed key is gone");
+    check(m.get(0, &out) == DICT_OK, "an even key survived");
+    check(m.get(99, &out) == DICT_NOT_FOUND, "the last odd key is gone");
+    check(m.get(98, &out) == DICT_OK, "the last even key survived");
+
+    /* ---------------- put() during iteration ---------------- */
+
+    m.clear();
+    for (i = 0; i < 10; i = i + 1) {
+        m.put(i, 0);
+    }
+    n = 0;
+    i = 100;
+    mit = m.iter();
+    while (mit.next()) {
+        if (mit.key() >= 0 && mit.key() < 10) {
+            n = n + 1;
+        }
+        if (i < 110) {
+            m.put(i, 0);
+            i = i + 1;
+        }
+    }
+    mit.release();
+    check(n == 10, "all keys present at the start are still visited exactly once");
+    check(m.len() == 20, "keys inserted while iterating are in the table");
+    check(m.get(109, &out) == DICT_OK, "a key inserted during iteration is readable after it");
+
+    /* remove everything through the iterator */
+    mit = m.iter();
+    n = 0;
+    while (mit.next()) {
+        mit.removeCurrent();
+        n = n + 1;
+    }
+    mit.release();
+    check(n == 20, "the second pass removes all 20 entries");
+    check(m.len() == 0, "removing through the iterator empties the table");
+    m.put(7, &i);
+    check(m.len() == 1 && m.get(7, &out) == DICT_OK, "the table is reusable after a full iterator sweep");
+    m.release();
+
+    /* ---------------- the same contract for string keys ---------------- */
+
+    names[0] = "k0";
+    names[1] = "k1";
+    names[2] = "k2";
+    names[3] = "k3";
+    names[4] = "k4";
+    names[5] = "k5";
+    names[6] = "k6";
+    names[7] = "k7";
+    names[8] = "k8";
+    names[9] = "k9";
+    for (i = 0; i < 10; i = i + 1) {
+        vals[i] = i;
+    }
+
+    d = dict::Lib.newStrPtr();
+    for (i = 0; i < 10; i = i + 1) {
+        d.put(names[i], &vals[i]);
+    }
+    n = 0;
+    sum = 0;
+    sit = d.iter();
+    while (sit.next()) {
+        n = n + 1;
+        sum = sum + *(int *)sit.value();
+    }
+    sit.release();
+    check(n == 10, "string iterator yields 10 steps");
+    check(sum == 45, "string iterator visits every value (sum)");
+
+    sit = d.iter();
+    while (sit.next()) {
+        if (*(int *)sit.value() < 5) {
+            check(sit.removeCurrent() == DICT_OK, "string removeCurrent is DICT_OK");
+            check(sit.key() == 0, "string key() is 0 after removeCurrent");
+            check(sit.value() == 0, "string value() is 0 after removeCurrent");
+        }
+    }
+    sit.release();
+    check(d.len() == 5, "five string entries were removed");
+    check(d.get(names[0], &out) == DICT_NOT_FOUND, "names[0] is gone");
+    check(d.get(names[9], &out) == DICT_OK, "names[9] survived");
+
+    /* empty table iterator */
+    d.clear();
+    sit = d.iter();
+    check(sit.next() == 0, "an empty table iterates zero times");
+    check(sit.removeCurrent() == DICT_NOT_FOUND, "removeCurrent on an empty table is DICT_NOT_FOUND");
+    sit.release();
+    d.release();
+
+    printf("SUMMARY passed=%d failed=%d\n", passed, failed);
+    return failed != 0;
+}

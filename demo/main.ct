@@ -1,0 +1,83 @@
+/*
+ * demo/main.ct - the smallest end-to-end dict program.
+ *
+ *   ct build -I . \
+ *     --cflags '-I vendor/dict/third_party' \
+ *     --ldflags 'vendor/dict/third_party/dict.c vendor/dict/third_party/siphash.c vendor/dict/third_party/zmalloc.c vendor/dict/third_party/mt19937-64.c' \
+ *     demo/main.ct -o demo
+ *
+ * tests/run.sh builds and runs this and diffs the output against
+ * demo/expected.out, so the demo is a checked artifact.
+ *
+ * Iteration order is never printed: the hash seed is randomized per process,
+ * so only order-independent aggregates (count, sum) go to stdout.
+ *
+ * License: BSD-3-Clause (see LICENSE).
+ */
+
+#include <stdio.h>
+
+import dict::DictTypes;
+import dict::Dict;
+
+int main(void)
+{
+    DictStrPtr *d;
+    DictStrPtrIter *it;
+    DictIntPtr *m;
+    DictIntPtrIter *mit;
+    void *out = 0;
+    int one = 1;
+    int two = 2;
+    int three = 3;
+    int seen;
+    int sum;
+    int same;
+
+    d = dict::Lib.newStrPtr();
+    d.put("one", &one).put("two", &two).put("three", &three);
+    printf("str len: %d\n", d.len());
+
+    d.get("two", &out);
+    printf("two: %d\n", *(int *)out);
+
+    seen = 0;
+    sum = 0;
+    it = d.iter();
+    while (it.next()) {
+        seen = seen + 1;
+        sum = sum + *(int *)it.value();
+    }
+    it.release();
+    printf("str iter: seen=%d sum=%d\n", seen, sum);
+
+    it = d.iter();
+    while (it.next()) {
+        if (*(int *)it.value() == 2) {
+            it.removeCurrent();
+        }
+    }
+    it.release();
+    printf("after remove: len=%d two=%d\n", d.len(), d.get("two", &out));
+
+    same = d.clear() == d;
+    printf("clear returns receiver: %d len: %d\n", same, d.len());
+    d.release();
+
+    m = dict::Lib.newIntPtr();
+    m.put(1, &one).put(2, &two).put(3, &three).put(1, &three);
+    m.get(1, &out);
+    printf("int len: %d one: %d\n", m.len(), *(int *)out);
+
+    seen = 0;
+    sum = 0;
+    mit = m.iter();
+    while (mit.next()) {
+        seen = seen + 1;
+        sum = sum + mit.key();
+    }
+    mit.release();
+    printf("int iter: seen=%d keysum=%d\n", seen, sum == 1 + 2 + 3);
+    m.release();
+    return 0;
+}

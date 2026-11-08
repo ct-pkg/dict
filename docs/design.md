@@ -1,7 +1,7 @@
 # dict 模块需求与设计（S0）
 
 - 日期：2026-11-08
-- 状态：**需求与骨架**。本轮不写实现、不拷第三方源码、不发布 tag
+- 状态：**S2 已实现**。可编译、可测、可安装；未打 tag（本轮不发布）
 - 目标包：`dict`（`ct-pkg/dict`），仓库 https://github.com/ct-pkg/dict
 - 上游：https://github.com/redis/redis ，核对基线 tag `7.2.4`（源码在 `src/`）
 - 选型依据：`ct/docs/design/map-options.md`（提交 `c568c71`）§3.C / §5 / §6.S2
@@ -10,18 +10,21 @@
 
 ## 0. 结论摘要
 
-1. **语义就是三件事**：只存指针、增量 rehash（每次操作搬少量桶，没有全表停顿）、
+1. **语义就是三件事**：值借用、增量 rehash（每次操作搬少量桶，没有全表停顿）、
    safe iterator（遍历中可删当前元素）。这三条是与 `hashmap` / `std::map` 的分界线。
-2. **两种形状**：`DictStrPtr`（借用的 `char *` 键 → 借用的 `void *` 值）与
-   `DictIntPtr`（`int` 键 → 借用的 `void *` 值）。`int` 键由 shim 分配 4 字节键槽，
-   `keyDestructor` 回收；值永远不归包所有。
-3. **零拷贝是契约，不是优化**：`put` 只保存指针。键必须活得比条目久、且插入后不能再改内容
-   （哈希值在插入时算定）。要"写完就放手"，用 `hashmap`。
+2. **两种形状**：`DictStrPtr`（表持有的 `char *` 键副本 → 借用的 `void *` 值）与
+   `DictIntPtr`（表持有的 4 字节 `int` 键槽 → 借用的 `void *` 值）。键由 `keyDestructor`
+   回收；值永远不归包所有。
+3. **键拷贝是 S2 的裁决**：`put` 复制键，调用方之后释放或改写自己的缓冲区都不影响条目。
+   这样"覆盖保留首个键指针"才不会变成悬垂引用（Q1）。值仍然只借用，不拷贝。
+   要连值一起托管，用 `hashmap`。
 4. **OOM 语义 = 进程终止，两个包共同的契约**（`hashmap` 采用同一语义，见 §6 与
    `hashmap/docs/design.md` §6）。这不是能力缺失，而是刻意选择：`dict.c` 的分配点没有
    返回 `NULL` 的检查路径，`zmalloc` 的默认 handler 打印后 `abort()`；`hashmap` 虽然能用
    `hashmap_oom()` 检出失败，但链式 `put` 没有错误通道，检出后也只能"静默丢失 + 事后查
-   状态"，因此同样终止。S2 只覆盖逻辑失败（键不存在、参数非法），不承诺 OOM 可恢复。
+   状态"，因此同样终止。`reserve` 是唯一需要区分成因的入口：逻辑拒绝返回
+   `DICT_INVALID`，真正的分配失败仍走同一 handler 终止（§6）。S2 只覆盖逻辑失败
+   （键不存在、参数非法），不承诺 OOM 可恢复。
 5. **迭代**用 safe iterator：`next()` 预取下一项，`removeCurrent()` 删除当前项后仍可继续。
    `key()` / `value()` 是借用指针，`next()` / `removeCurrent()` 之后失效。
 6. **不提供自动析构**：只给 `release()`；`Drop` 由调用方单元自己写。
@@ -48,14 +51,15 @@
 
 | 场景 | `std::map` | `hashmap` | `dict` |
 | --- | --- | --- | --- |
-| 键值由调用方长期持有，表只做索引 | ⚠️ 需自己管指针 | ❌ 会拷贝 | ✅ 首选 |
+| 值由调用方长期持有，表只借用 | ⚠️ 需自己管指针 | ❌ 连值一起拷贝 | ✅ 首选 |
+| 键可以是短命缓冲区，插入后即可释放 | ⚠️ 需自己留副本 | ✅ 会拷贝 | ✅ 会拷贝 |
 | 十万级以上，扩容不能有停顿 | ❌ | ⚠️ 一次性 | ✅ |
 | 遍历中删除 | ❌ | ❌ | ✅ |
 | 想免掉第三方依赖 | ✅ | ✅ 单文件 | ❌ 抽取 8 个文件 |
 | OOM 要能优雅降级 | ✅ 返回 -1 | ❌ abort（同本包） | ❌ abort |
 
-判据只有两条是调用方可见的：**表是否持有你的键值**、**扩容是否会造成停顿**。
-本包在前者是"不持有"，在后者是"增量"。
+判据只有两条是调用方可见的：**表是否持有你的键或值**、**扩容是否会造成停顿**。
+本包持有键（副本）、只借用值；扩容是增量的。
 
 ---
 
@@ -63,8 +67,8 @@
 
 | CT 句柄 | C 侧包装 | 宿主 | 说明 |
 | --- | --- | --- | --- |
-| `DictStrPtr *` | `struct ct_dict_strptr { dict *d; }` | `DictStrPtr *` | 借用 `char *` 键 → 借用 `void *` 值 |
-| `DictIntPtr *` | `struct ct_dict_intptr { dict *d; }` | `DictIntPtr *` | `int` 键 → 借用 `void *` 值 |
+| `DictStrPtr *` | `struct ct_dict_strptr { dict *d; }` | `DictStrPtr *` | 表持有的 `char *` 键副本 → 借用 `void *` 值 |
+| `DictIntPtr *` | `struct ct_dict_intptr { dict *d; }` | `DictIntPtr *` | 表持有的 4 字节 `int` 键槽 → 借用 `void *` 值 |
 | `DictStrPtrIter *` | `dictIterator *` + 当前 `dictEntry *` | `DictStrPtrIter *` | safe iterator |
 | `DictIntPtrIter *` | 同上 | `DictIntPtrIter *` | safe iterator |
 
@@ -80,20 +84,23 @@
 - `newStrPtr()` / `newIntPtr()` 返回的句柄由调用方唯一拥有；`release()` 释放表与全部条目。
 - `release(0)` 空操作；非空句柄只允许 `release()` 一次。
 - **没有自动析构**，`Drop` 由调用方写。
-- `clear()` 等价 `dictEmpty(d, NULL)`：删掉全部条目，不释放键值指向的对象，表本身保留。
+- `clear()` 等价 `dictEmpty(d, NULL)`：删掉全部条目并释放键副本 / 键槽，不释放值指向的
+  对象，表本身保留。
 
-### 3.2 键：借用，且必须不可变
+### 3.2 键：复制并由表持有
 
-- `put("alice", v)` **不复制** `"alice"`；条目里存的是这个指针。
-- 键缓冲区必须活得比条目久：调用方 `free` 掉之后，任何 `get` / `del` / 遍历都是悬垂访问。
-- 键内容在插入后**不能修改**：哈希值在插入时算定，改动键会让条目再也查不到，
-  且 `release()` 时无法正确定位。这是"只存指针"的硬约束，README 第一屏要写。
+- `put("alice", v)` **复制** `"alice"`（`zmalloc(strlen + 1)` + `memcpy`）；条目里的键
+  指针指向这份副本。调用方之后 `free` 或改写自己的缓冲区，都不影响条目。
+- 键副本由表拥有：`del` / `clear` / `release` 通过 `dictType` 的 `keyDestructor`
+  （`zfree`）释放，每个存活条目恰好一份。
 - 键按 C 字符串处理（`strlen` / `strcmp`），**不允许内嵌 `0x00`**。
-- **覆盖不释放旧键值**：表本来就不拥有它们；`put` 命中已有键时，旧键指针与旧值指针直接
-  被替换，调用方若要回收需自己先 `get` 保存。
-- `DictStrPtr` 不提供 `keyDup` / `keyDestructor`（均为 `NULL`）；要包托管键，用 `hashmap`。
-- `DictIntPtr` 的键由 shim 写进一个 4 字节键槽（`zmalloc(4)`），
-  `keyDestructor` 用 `zfree` 回收；这是包自己的分配，不改变"值不归包所有"。
+- **覆盖只替换值，键指针保持首次插入的那份副本**（Q1 裁决：跟随上游 `dictReplace`）。
+  由于键是表持有的副本，这个指针不会悬垂；旧值指针被替换但不释放，值仍归调用方。
+- `DictIntPtr` 的键同样由表持有：shim 写进一个 4 字节键槽（`zmalloc(4)`），
+  `keyDestructor` 用 `zfree` 回收。
+- **上游查找的边界（Q4，S2 实测）**：`dictFind` 用查询字节重算哈希、按字节比较，不比较
+  条目里冻结的哈希。若某天存储键被原地改写，旧字节必不可达，而新字节在掩码桶相同时仍可能
+  命中。本包的公开 API 只暴露表持有的副本，调用方无法制造这种状态；此条只作为内部语义记录。
 
 ### 3.3 值：借用
 
@@ -138,22 +145,22 @@
 
 | 方法 | 签名 | 说明 |
 | --- | --- | --- |
-| `put` | `DictStrPtr *put(const char *key, void *value)` | `dictReplace` 语义：插入或覆盖；不拷贝；返回接收者 |
+| `put` | `DictStrPtr *put(const char *key, void *value)` | 复制键；插入或覆盖（覆盖只换值，保留首个键副本）；返回接收者 |
 | `get` | `int get(const char *key, void **out)` | `out` 可为 0，只判存在性 |
-| `del` | `int del(const char *key)` | 返回 `DICT_OK` / `DICT_NOT_FOUND` |
+| `del` | `int del(const char *key)` | 删除条目并释放键副本；返回 `DICT_OK` / `DICT_NOT_FOUND` |
 | `len` | `int len()` | 条目数，上限 2^31-1 |
-| `clear` | `DictStrPtr *clear()` | 删条目，不释放键值；返回接收者 |
-| `reserve` | `DictStrPtr *reserve(int buckets)` | `dictTryExpand`，桶数向上取 2 的幂；被拒时 `status()` 为 `DICT_INVALID` |
+| `clear` | `DictStrPtr *clear()` | 删条目并释放键副本，不释放值；返回接收者 |
+| `reserve` | `DictStrPtr *reserve(int buckets)` | 桶数向上取 2 的幂；逻辑拒绝 → `DICT_INVALID`；真实 OOM → abort（§6） |
 | `status` | `int status()` | 最近一次数据 / 扩容操作的状态 |
 | `iter` | `DictStrPtrIter *iter()` | 新建 safe iterator |
-| `release` | `void release()` | 释放表；不释放键值 |
+| `release` | `void release()` | 释放表与键副本；不释放值 |
 
 ### 4.3 `DictStrPtrIter *`
 
 | 方法 | 签名 | 说明 |
 | --- | --- | --- |
 | `next` | `int next()` | 1 = 有当前条目，0 = 结束 |
-| `key` | `char *key()` | 借用当前条目的键 |
+| `key` | `char *key()` | 借用当前条目的键副本 |
 | `value` | `void *value()` | 借用当前条目的值 |
 | `removeCurrent` | `int removeCurrent()` | 删除当前条目，返回 `DICT_OK` / `DICT_NOT_FOUND`；之后仍可 `next()` |
 | `release` | `void release()` | 释放迭代器 |
@@ -201,6 +208,8 @@
 
 - `dict.c` 的分配全部走 `zmalloc` / `zcalloc` / `zrealloc`，而这些分配点**没有** `NULL`
   检查；`zmalloc` 的默认 OOM handler 是打印后 `abort()`。
+- 唯一的非终止分配入口是 `dictTryExpand()` 内的 `ztrycalloc`：失败返回 `NULL` 而不调用
+  handler。它还丢弃 `_dictExpand` 的返回值，未扩容也报 `DICT_OK`（Q3）。
 - 因此"返回 `NULL` 让调用方降级"不是抽取层的可选项，除非逐路径改写上游。
 
 本包契约：
@@ -208,8 +217,10 @@
 1. **OOM = 进程终止（abort）**，与 Redis 及 `hashmap` 一致。这是两个包共同的对外契约
    （README §5.5 与排错表）：内存不足时调用方拿不到错误码，进程会退出。
 2. 返回值只表达逻辑失败：键不存在（`DICT_NOT_FOUND`）、参数非法（`DICT_INVALID`）。
-3. `reserve()` 在扩容被内部状态拒绝（正在 rehash / 扩容被禁用）时返回 `DICT_INVALID`，
-   调用方可稍后重试；这不是 OOM 路径。
+3. `reserve()` 按成因分化（Q2）：先复刻 `_dictExpand()` 的逻辑拒绝条件（正在 rehash /
+   `ht_used[0] > buckets` / 同一 2 的幂 / 尺寸溢出），命中即返回 `DICT_INVALID`，不触碰
+   分配器；条件都不成立才调用 `dictTryExpand()`，此时失败就是真正的分配失败，走同一
+   `zmalloc` OOM handler 终止。调用后用 `dictSlots()` 差分兜底（Q3）。
 4. 不提供 OOM handler 注册：CT 没有闭包，注册 C 函数指针等于把 C 类型泄露到公开面；
    需要自定义 allocator 的场景不在 v1。
 5. 若将来要软失败，必须同时做两件事：把 `zmalloc` 换成返回 `NULL` 的配置，并逐个改写
@@ -232,13 +243,14 @@
 | `dictType` 常量 | 1 | 1 | +1 |
 | 哈希函数 | 1（SipHash + `strlen`） | 1（整数哈希） | +1 |
 | 比较函数 | 1（`strcmp`） | 1（整数相等） | +1 |
-| 键槽分配 / 释放 | 0（借用） | 2（`zmalloc` / `zfree`） | 形状相关 |
+| 键复制 / 释放 | 2（`zmalloc` / `zfree`） | 2（`zmalloc` 4 / `zfree`） | 2 |
 | 构造器 | 1 | 1 | +1 |
 | 迭代器包装 | 1 | 1 | +1 |
 | mapping 行 | 14 | 14 | +14 |
 
-合计：**C 侧 14 个定义**（`DictStrPtr` 6 个 + `DictIntPtr` 8 个）+ **30 行 mapping**
-（14×2 + 2 个构造器）+ 1 个 shim 头 + 抽取的上游文件（§12）。
+合计（S2 实测）：**42 个 `static inline` 定义**——30 个公开方法实现、4 个哈希/比较、
+3 个键复制/回收、5 个共享辅助函数（播种、2 的幂、拒绝判定、OOM 触发、reserve 状态）——
+外加 **30 行 mapping**（14×2 + 2 个构造器）、1 个 shim 头与抽取的上游文件（§12）。
 新增形状的成本与已有形状数无关：1 个 `dictType` + 1 组 hash/compare + 1 个构造器 +
 14 行 mapping。没有泛型，这个成本无法消除。
 
@@ -248,13 +260,13 @@
 
 | 维度 | `std::map` | `hashmap` | `dict`（本包） |
 | --- | --- | --- | --- |
-| 键 | 借用指针 | 深拷贝（strdup） | **借用指针，且不可变** |
+| 键 | 借用指针 | 深拷贝（strdup） | **表持有副本（S2 裁决，Q1）** |
 | 值 | 借用，可配 `free_fn` | 借用，不配 | 借用 |
 | 容量 | 定容 | 自动 | 自动 |
 | 扩容 | 无 | 一次性搬全表 | 增量，每次操作搬少量桶 |
 | 遍历中删除 | 无遍历 | 不支持 | **支持（`removeCurrent`）** |
 | OOM | `put` 返回 -1 | 进程 abort（与本包相同） | **进程 abort** |
-| 额外依赖 | 无 | 单文件 | 9 个上游文件 + 1 个本地断言适配头 |
+| 额外依赖 | 无 | 单文件 | 9 个上游文件 + 3 个本地适配头 |
 
 ---
 
@@ -262,7 +274,8 @@
 
 - 不做统一 `Map` trait / 抽象层（所有权语义不同，且无泛型）。
 - 不做自动析构 / `Drop`。
-- 不做键值拷贝、不做 `keyDup` / `valDup` 的可配置入口（要拷贝就用 `hashmap`）。
+- 不做值拷贝；键的拷贝是固定的内部行为（§3.2），不提供 `keyDup` / `valDup` 可配置入口
+  （要连值一起托管就用 `hashmap`）。
 - 不做线程安全；`dict` 与 Redis 一样由调用方加锁。
 - 不暴露 `dictScan`（回调式，CT 无闭包）。
 - 不暴露 `dict_can_resize` / `dictPauseRehashing` / `dictSetResizeEnabled`（进程级全局，
@@ -290,10 +303,11 @@
 
 - 落地 `newStrPtr` / `put` / `get` / `del` / `len` / `clear` / `reserve` / `status` /
   `release`。
-- 测试：插入、覆盖、删除、清空、重复 `release(0)`；**键指针不变**（同一指针注册两次
-  `get` 命中）；调用方改键内容后查不到（把"不可变"写成负向用例）。
+- 测试：插入、覆盖、删除、清空、重复 `release(0)`；覆盖后 `key()` 返回首次插入的
+  **表持有副本**（不是调用方缓冲区）；调用方改内容或释放缓冲区后仍可查；副本在
+  `del` / `clear` / `release` 时配平释放。
 - 用测试夹具把 `zmalloc` 的 OOM handler 换成固定文案后 `abort`，在子进程注入分配失败，
-  断言进程终止而不是返回错误——这是 §6 共同契约的可执行证据。
+  断言 `put` / 构造器终止；同时断言 `reserve` 的逻辑拒绝不终止、真正的分配失败终止。
 
 验收：`tests/run.sh` 全绿，`-Wall -Wextra` 零告警。
 
@@ -316,10 +330,10 @@
 
 ### S2.5 · 文档与安装态
 
-- README 9 节骨架填满；所有代码块实测后写入，输出逐字一致。
+- README 10 节骨架填满；所有代码块实测后写入，输出逐字一致。
 - `ct get` / `ct install` 安装态验证：`third_party/` 被完整拷贝（目录名不能是 `vendor`），
   `ldflags` 的 4 个 `.c` 都能找到。
-- 取消 `index/packages.txt` 的注释，并推 `v0.1.0`（`ct.pkg` 的 `version` 已是 `0.1.0`）。
+- 未发布：`index/packages.txt` 保持注释，不打 tag、不 push（Q1–Q4 落地后的状态）。
 
 ---
 
@@ -327,7 +341,7 @@
 
 | # | 风险 | 处置 |
 | --- | --- | --- |
-| R-1 | 键内容被调用方修改 → 条目永久失联 | §3.2 + S2.1 负向用例 |
+| R-1 | 调用方缓冲区被改写 / 释放 → 条目悬垂 | 已改为表持有键副本（§3.2）；S2.1 用"改内容 / 释放后仍可查"与配平释放验证。上游原地改存储键的边界见 Q4，公开 API 不可达 |
 | R-2 | `int` 键槽泄漏（漏 `keyDestructor`） | S2.2 计数配平；注入变异证明门禁会红 |
 | R-3 | OOM 终止进程，调用方无法降级 | §6 明示为与 `hashmap` 的共同契约；需要软失败时另开切片 |
 | R-4 | include 闭包比 `map-options.md` 列的更大 | S2.0 逐文件核对，`third_party/README.md` 记录 |
@@ -340,7 +354,7 @@
 
 ## 12. 上游清单与许可
 
-从 Redis `7.2.4` 的 `src/` 抽取（S2 落地，本轮不拷）：
+从 Redis `7.2.4` 的 `src/` 抽取（S2 已落地到 `third_party/`）：
 
 | 文件 | 理由 |
 | --- | --- |
@@ -355,8 +369,11 @@
 必须保留 `COPYING`、每个源文件的版权头，README 注明"本包不是 Redis 官方发行版，
 未获 Redis 背书"。7.4+ 与 8.x 不得引入。
 
-未验证项（S2.0 必须逐条核对，不得当成既成事实）：
+S2.0 未验证项，已在 S2 逐条核对（结论以实测为准）：
 
-- `zmalloc.c` 在本快照下的完整 include 闭包与能否零告警编译；
-- `dict.c` 是否还依赖 `util.h` / `serverassert` 等未列出的头；
-- `dictNext` 在 `removeCurrent` 后继续遍历的实际行为（以 S2.3 实测为准）。
+- `zmalloc.c` 的 include 闭包：需 `fmacros.h`、`atomicvar.h`，以及空的 `config.h` /
+  `solarisfixes.h`；补 `-Wall -Wextra` 后零告警（`tools/check.sh` 每次重编）。
+- `dict.c` 只依赖 `dict.h` / `zmalloc.h` / `redisassert.h` / `fmacros.h`，**不**依赖
+  `util.h` / `server.h` / `_serverAssert`；本地 `redisassert.h` 适配头足够（§12 表）。
+- `dictNext` 在 `removeCurrent` 后继续遍历：S2.3 实测安全（safe iterator 先预取），
+  `tests/iterator.ct` 343 条断言覆盖；契约见 §5。

@@ -1,0 +1,86 @@
+/*
+ * chain.ct - the chain contract is a compile-time property, so this suite is
+ * mostly about proving the shapes the README documents actually compile and
+ * that the last step in a chain is still the receiver.
+ *
+ * Run through tests/run.sh, which requires `SUMMARY passed=N failed=0` and a
+ * warning-free build.
+ *
+ * License: BSD-3-Clause (see LICENSE).
+ */
+
+#include <stdio.h>
+
+import dict::DictTypes;
+import dict::Dict;
+
+int passed = 0;
+int failed = 0;
+
+void check(int cond, const char *name)
+{
+    if (cond) {
+        passed = passed + 1;
+        return;
+    }
+    failed = failed + 1;
+    printf("FAIL %s\n", name);
+}
+
+int main(void)
+{
+    DictStrPtr *d;
+    DictStrPtr *step;
+    DictIntPtr *m;
+    DictIntPtr *mstep;
+    void *out;
+    int a;
+    int b;
+    int c;
+
+    a = 1;
+    b = 2;
+    c = 3;
+
+    /* constructor result used as a receiver in the same statement */
+    d = dict::Lib.newStrPtr().put("a", &a);
+    check(d != 0, "a chained constructor result is a handle");
+    check(d.len() == 1, "the put in the constructor chain took effect");
+
+    /* four-step chain, each step returns the same receiver */
+    step = d.put("b", &b).put("c", &c).reserve(1024).clear();
+    check(step == d, "a four-step chain returns the receiver");
+    check(d.len() == 0, "the clear at the end of the chain took effect");
+    check(d.status() == DICT_OK, "the last step in the chain left DICT_OK");
+
+    /* the receiver can be captured in the middle and reused */
+    step = d.put("a", &a);
+    check(step == d, "put returns the receiver");
+    step = step.put("b", &b);
+    check(step == d, "put on a captured receiver returns the same receiver");
+    step = step.reserve(64);
+    check(step == d, "reserve returns the same receiver");
+    check(d.len() == 2, "the chained writes are all present");
+
+    d.get("b", &out);
+    check(out == &b, "the chained write stored the right value");
+    d.release();
+
+    m = dict::Lib.newIntPtr().put(1, &a);
+    check(m != 0, "an int constructor result is a handle");
+    check(m.len() == 1, "the int put in the constructor chain took effect");
+
+    mstep = m.put(2, &b).put(3, &c).reserve(256).clear();
+    check(mstep == m, "a four-step int chain returns the receiver");
+    check(m.len() == 0, "the int clear at the end of the chain took effect");
+
+    mstep = m.put(1, &a).put(2, &b);
+    check(mstep == m, "a two-step int put chain returns the receiver");
+    check(m.len() == 2, "both int writes are present");
+    m.get(2, &out);
+    check(out == &b, "the chained int write stored the right value");
+    m.release();
+
+    printf("SUMMARY passed=%d failed=%d\n", passed, failed);
+    return failed != 0;
+}

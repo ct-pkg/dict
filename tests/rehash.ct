@@ -1,0 +1,161 @@
+/*
+ * rehash.ct - 100k inserts across many incremental rehashes, with old keys
+ * re-read while the table is growing, and the same load through a pre-sized
+ * table.
+ *
+ * Run through tests/run.sh, which requires `SUMMARY passed=N failed=0` and a
+ * warning-free build. Runtime is roughly one second.
+ *
+ * License: BSD-3-Clause (see LICENSE).
+ */
+
+#include <stdio.h>
+
+import dict::DictTypes;
+import dict::Dict;
+
+int passed = 0;
+int failed = 0;
+
+void check(int cond, const char *name)
+{
+    if (cond) {
+        passed = passed + 1;
+        return;
+    }
+    failed = failed + 1;
+    printf("FAIL %s\n", name);
+}
+
+int main(void)
+{
+    DictIntPtr *m;
+    DictIntPtrIter *it;
+    void *out;
+    int i;
+    int n;
+    int ok;
+    int reread_ok;
+    int stride_ok;
+    int grow_len;
+    int grow_iter;
+    int presized_len;
+    int presized_sample_ok;
+    int presized_iter;
+
+    /* ---------------- growth without losing old keys ---------------- */
+
+    m = dict::Lib.newIntPtr();
+    ok = 1;
+    for (i = 0; i < 100000; i = i + 1) {
+        m.put(i, 0);
+        if (i % 1000 == 0) {
+            /*
+             * Re-read a few old keys while rehashing is in progress. The
+             * first key is the oldest survivor of every rehash so far.
+             */
+            if (m.get(0, &out) != DICT_OK) {
+                ok = 0;
+            }
+            if (m.get(i, &out) != DICT_OK) {
+                ok = 0;
+            }
+            if (i > 0 && m.get(i - 1, &out) != DICT_OK) {
+                ok = 0;
+            }
+        }
+    }
+    reread_ok = ok;
+    check(ok, "old keys stay readable across growth");
+    check(m.len() == 100000, "len is 100000 after the growth loop");
+    grow_len = m.len();
+    check(m.status() == DICT_OK, "the last operation left status DICT_OK");
+
+    ok = 1;
+    for (i = 0; i < 100000; i = i + 1000) {
+        if (m.get(i, &out) != DICT_OK) {
+            ok = 0;
+        }
+    }
+    stride_ok = ok;
+    check(ok, "a 1000-key stride sample is still present");
+
+    n = 0;
+    it = m.iter();
+    while (it.next()) {
+        n = n + 1;
+    }
+    it.release();
+    grow_iter = n;
+    check(n == 100000, "the full iterator sees 100000 entries");
+
+    check(m.del(0) == DICT_OK, "the first key deletes");
+    check(m.del(0) == DICT_NOT_FOUND, "the first key is gone");
+    check(m.del(99999) == DICT_OK, "the last key deletes");
+    check(m.len() == 99998, "len reflects both deletes");
+    m.release();
+
+    /* ---------------- iterator created mid-rehash ---------------- */
+    /*
+     * Load 1000 entries first, then reserve(65536): the rehash begins with 1000
+     * entries still in table 0, so one more insert leaves it clearly mid-rehash
+     * and iteration must see both tables. tests/slots.c asserts the same state
+     * directly, plus monotonic progress and completion.
+     */
+    m = dict::Lib.newIntPtr();
+    for (i = 0; i < 1000; i = i + 1) {
+        m.put(i, 0);
+    }
+    m.reserve(65536);
+    check(m.status() == DICT_OK, "reserve starts an incremental rehash");
+    m.put(1000, 0);
+    n = 0;
+    it = m.iter();
+    while (it.next()) {
+        n = n + 1;
+    }
+    it.release();
+    check(n == 1001, "an iterator created mid-rehash sees every entry");
+    m.release();
+
+    /* ---------------- pre-sized table, same load ---------------- */
+
+    m = dict::Lib.newIntPtr();
+    check(m.reserve(131072) == m, "reserve returns the receiver");
+    check(m.status() == DICT_OK, "reserving 131072 buckets succeeds");
+
+    for (i = 0; i < 100000; i = i + 1) {
+        m.put(i, 0);
+    }
+    presized_len = m.len();
+    check(m.len() == 100000, "len is 100000 after the pre-sized load");
+
+    ok = 1;
+    for (i = 0; i < 100000; i = i + 777) {
+        if (m.get(i, &out) != DICT_OK) {
+            ok = 0;
+        }
+    }
+    presized_sample_ok = ok;
+    check(ok, "the pre-sized table has every sampled key");
+
+    n = 0;
+    it = m.iter();
+    while (it.next()) {
+        n = n + 1;
+    }
+    it.release();
+    presized_iter = n;
+    check(n == 100000, "the pre-sized table iterates 100000 entries");
+    m.release();
+
+    printf("REHASH grow entries=%d reread_every=1000 reread_ok=%d stride_ok=%d iterated=%d\n",
+           grow_len, reread_ok, stride_ok, grow_iter);
+    printf("REHASH presized reserve=131072 entries=%d sample_ok=%d iterated=%d\n",
+           presized_len, presized_sample_ok, presized_iter);
+    printf("REHASH equivalent entries=%d iterated=%d\n",
+           grow_len == presized_len, grow_iter == presized_iter);
+
+    printf("SUMMARY passed=%d failed=%d\n", passed, failed);
+    return failed != 0;
+}

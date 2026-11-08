@@ -1,31 +1,38 @@
 /*
- * Dict - the Redis 7.2.x dict contract (S0 skeleton).
- *
- * This unit is the public contract only: handle aliases and trait signatures.
- * The `map trait ... for type ...` blocks and the shim land at S2, so this file
- * is intentionally not compilable yet -- importing it gets the reader the exact
- * method list in docs/design.md, nothing more.
+ * Dict - the Redis 7.2.4 dict contract on a CT OO surface.
  *
  * Two monomorphic shapes:
  *
- *   DictStrPtr *  borrowed char * key -> borrowed void * value
- *   DictIntPtr *  int key             -> borrowed void * value
+ *   DictStrPtr *  copied char * key    -> borrowed void * value
+ *   DictIntPtr *  int key (owned slot) -> borrowed void * value
  *
- * Redis dict stores POINTERS ONLY. The package never copies a key or a value:
- *   - a key must outlive its entry and must not be modified after put(), because
- *     the hash is computed at insert time;
- *   - a value is borrowed; clear() / release() never free the pointee;
- *   - an int key lives in a 4-byte slot allocated by the shim and released by
- *     the dictType key destructor.
+ * Ownership:
+ *
+ *   - KEYS ARE COPIED AND OWNED BY THE TABLE. A char * key is duplicated on
+ *     insert and freed by the dictType keyDestructor on del / clear / release;
+ *     an int key lives in a 4-byte slot the shim allocates. The caller may free
+ *     or mutate its own buffer after put() without affecting the entry.
+ *     Overwriting an existing key keeps the FIRST owned copy and only replaces
+ *     the value.
+ *   - VALUES ARE BORROWED. The table stores the pointer only; it never copies
+ *     or frees the pointee, and the value must outlive its entry.
  *
  * Rehashing is incremental and the iterator is a safe iterator, so
  * removeCurrent() may be used while iterating.
  *
- * OOM is abort-on-OOM, matching Redis zmalloc: dict.c has no NULL-check path for
- * allocation, so there is no soft-failure contract. See docs/design.md §6.
+ * OOM aborts the process, matching Redis zmalloc: dict.c has no NULL-check path
+ * for allocation, so there is no soft-failure contract. reserve() is the one
+ * operation with a logical error channel: it returns DICT_INVALID without
+ * touching the allocator when the request is refused (rehashing, same
+ * power-of-two, below ht_used, size overflow); once those are ruled out, a real
+ * allocation failure aborts like every other path. See docs/design.md §6 and
+ * docs/implementation.md.
  *
  * Every handle is released explicitly. There is no `Drop`: a built-in Drop is
  * emitted `static`, so a package unit cannot destroy a caller's value.
+ *
+ * Every method that configures or writes returns the receiver, so chains stay
+ * on one line: d.put("a", x).put("b", y).clear();
  */
 namespace dict;
 
@@ -84,4 +91,53 @@ pub trait IntPtrIter {
     void *value();
     int removeCurrent();
     void release();
+}
+
+map trait StrPtrDict for type DictStrPtr * {
+    put(d, k, v) -> ct_dict_strptr_put(d, k, v);
+    get(d, k, out) -> ct_dict_strptr_get(d, k, out);
+    del(d, k) -> ct_dict_strptr_del(d, k);
+
+    len(d) -> ct_dict_strptr_len(d);
+    clear(d) -> ct_dict_strptr_clear(d);
+    reserve(d, n) -> ct_dict_strptr_reserve(d, n);
+
+    status(d) -> ct_dict_strptr_status(d);
+    iter(d) -> ct_dict_strptr_new_iter(d);
+    release(d) -> ct_dict_strptr_release(d);
+}
+
+map trait StrPtrIter for type DictStrPtrIter * {
+    next(it) -> ct_dict_strptr_iter_next(it);
+    key(it) -> ct_dict_strptr_iter_key(it);
+    value(it) -> ct_dict_strptr_iter_value(it);
+    removeCurrent(it) -> ct_dict_strptr_iter_remove_current(it);
+    release(it) -> ct_dict_strptr_iter_release(it);
+}
+
+map trait IntPtrDict for type DictIntPtr * {
+    put(d, k, v) -> ct_dict_intptr_put(d, k, v);
+    get(d, k, out) -> ct_dict_intptr_get(d, k, out);
+    del(d, k) -> ct_dict_intptr_del(d, k);
+
+    len(d) -> ct_dict_intptr_len(d);
+    clear(d) -> ct_dict_intptr_clear(d);
+    reserve(d, n) -> ct_dict_intptr_reserve(d, n);
+
+    status(d) -> ct_dict_intptr_status(d);
+    iter(d) -> ct_dict_intptr_new_iter(d);
+    release(d) -> ct_dict_intptr_release(d);
+}
+
+map trait IntPtrIter for type DictIntPtrIter * {
+    next(it) -> ct_dict_intptr_iter_next(it);
+    key(it) -> ct_dict_intptr_iter_key(it);
+    value(it) -> ct_dict_intptr_iter_value(it);
+    removeCurrent(it) -> ct_dict_intptr_iter_remove_current(it);
+    release(it) -> ct_dict_intptr_iter_release(it);
+}
+
+map trait Lib for namespace dict {
+    newStrPtr() -> ct_dict_strptr_new();
+    newIntPtr() -> ct_dict_intptr_new();
 }

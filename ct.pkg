@@ -1,21 +1,22 @@
 # dict - the Redis 7.2.x dict mapped onto a CT OO surface.
 #
 # Semantics that define this package (do not "unify" them with hashmap):
-#   - entries store POINTERS only; the package never copies a key or a value;
+#   - keys are COPIED and owned by the table; values are BORROWED pointers;
 #   - rehashing is incremental, a few buckets per operation, no full-table pause;
-#   - the safe iterator is the supported way to delete while iterating.
+#   - the safe iterator is the supported way to delete while iterating;
+#   - reserve() returns DICT_INVALID for a logical refusal and aborts only on a
+#     real allocation failure (see README section 5.5).
 #
-# Two monomorphic shapes form the baseline: `DictStrPtr` (borrowed char * key ->
+# Two monomorphic shapes form the baseline: `DictStrPtr` (copied char * key ->
 # borrowed void * value) and `DictIntPtr` (int key -> borrowed void * value). An
 # int key is carried in a 4-byte slot allocated by the shim and released by the
-# dictType key destructor; that is still "pointer only", just a package-owned
-# pointer to a small integer.
+# dictType key destructor.
 #
-# `third_party/` (not `vendor/`) will hold the Redis snapshot at S2: `ct get`
-# skips a directory named `vendor`, so a package shipping its own would install
-# without it. The snapshot is Redis 7.2.x only: 7.2 and earlier are
-# BSD-3-Clause, 7.4+ is RSALv2/SSPL and 8.0+ is AGPLv3, none of which may be
-# vendored here. See LICENSE.
+# `third_party/` (not `vendor/`) holds the Redis 7.2.4 snapshot: `ct get` skips a
+# directory named `vendor`, so a package shipping its own would install without
+# it. The snapshot is Redis 7.2.x only: 7.2 and earlier are BSD-3-Clause, 7.4+
+# is RSALv2/SSPL and 8.0+ is AGPLv3, none of which may be vendored here.
+# See LICENSE and third_party/README.md.
 #
 # Unreleased: `version = 0.1.0` is the declared first version, not a tag. No
 # `v0.1.0` exists on the remote yet, so `tools/repos.txt` records the tag as `-`
@@ -24,5 +25,5 @@ name = dict
 version = 0.1.0
 licence = BSD-3-Clause
 cflags = -I vendor/dict/third_party
-ldflags = vendor/dict/third_party/dict.c vendor/dict/third_party/siphash.c vendor/dict/third_party/zmalloc.c vendor/dict/third_party/mt19937-64.c
+ldflags = vendor/dict/third_party/dict.c vendor/dict/third_party/siphash.c vendor/dict/third_party/zmalloc.c vendor/dict/third_party/mt19937-64.c vendor/dict/dict/Dict.seed.c
 requires = ct >= 0.20.3
