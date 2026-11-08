@@ -20,7 +20,7 @@ CC=${CC:-cc}
 WORK=$(mktemp -d "${TMPDIR:-/tmp}/ct-dict-tests.XXXXXX")
 trap 'rm -rf "$WORK"' EXIT
 
-LDFLAGS="$PKG/third_party/dict.c $PKG/third_party/siphash.c $PKG/third_party/zmalloc.c $PKG/third_party/mt19937-64.c $PKG/dict/Dict.seed.c"
+LDFLAGS="$PKG/third_party/dict.c $PKG/third_party/siphash.c $PKG/third_party/zmalloc.c $PKG/third_party/mt19937-64.c $PKG/dict/seed.c"
 CFLAGS="-I $PKG/third_party -Wall -Wextra"
 
 failures=0

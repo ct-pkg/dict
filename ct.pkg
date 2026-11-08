@@ -25,5 +25,5 @@ name = dict
 version = 0.1.0
 licence = BSD-3-Clause
 cflags = -I vendor/dict/third_party
-ldflags = vendor/dict/third_party/dict.c vendor/dict/third_party/siphash.c vendor/dict/third_party/zmalloc.c vendor/dict/third_party/mt19937-64.c vendor/dict/dict/Dict.seed.c
+ldflags = vendor/dict/third_party/dict.c vendor/dict/third_party/siphash.c vendor/dict/third_party/zmalloc.c vendor/dict/third_party/mt19937-64.c vendor/dict/dict/seed.c
 requires = ct >= 0.20.3

@@ -1,11 +1,15 @@
 /*
- * Dict.seed.c - the process-wide hash seed, seeded exactly once per process.
+ * seed.c - the process-wide hash seed, seeded exactly once per process.
  *
  * dictSetHashFunctionSeed() writes a process-global. The latch must therefore
  * live in one translation unit, not in a header: a `static` latch in the shim
  * would give every .ct unit its own copy, so the second unit to build a table
  * would reseed the global and silently orphan keys inserted by the first.
  * Every unit calls this one non-static symbol instead.
+ *
+ * The file name is short on purpose: ct caps a ct.pkg metadata value at 160
+ * bytes, and this path appears once in `ldflags` next to the four upstream
+ * sources. A longer name overflows that cap ("metadata that does not fit").
  *
  * License: BSD-3-Clause (see LICENSE).
  */

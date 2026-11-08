@@ -12,7 +12,7 @@
 | 安装布局 | 真实 `ct get` / `ct install` 复制后构建、运行 demo，输出逐字匹配 |
 | CT 测试 | `unit` 68、`iterator` 343、`rehash` 16、`chain` 17，共 444 条断言 |
 | C 门禁 | `slots.c` 分配账目 + 增量 rehash 行为（1536）；`oom.c` 四路可注入 OOM（4）；`gen.c` ASan generation 守卫（8）；`multi_tu` 双 TU 播种门禁（20 次） |
-| 静态门禁 | `tools/check.sh` 共 88 项；`tests/run.sh` 另设每套件断言数下限（§7 M23） |
+| 静态门禁 | `tools/check.sh` 共 89 项；`tests/run.sh` 另设每套件断言数下限（§7 M23） |
 | 发布 | 未打 tag、未 push；`index/` 未改；交付物已提交（S1） |
 
 ## 2. 上游来源与完整性
@@ -52,12 +52,13 @@
 ```sh
 ct build -I vendor/dict \
   --cflags '-I vendor/dict/third_party' \
-  --ldflags 'vendor/dict/third_party/{dict.c,siphash.c,zmalloc.c,mt19937-64.c} vendor/dict/dict/Dict.seed.c' \
+  --ldflags 'vendor/dict/third_party/{dict.c,siphash.c,zmalloc.c,mt19937-64.c} vendor/dict/dict/seed.c' \
   yourapp.ct -o yourapp
 ```
 
-`Dict.seed.c` 必须与上游四个源文件一起链接：哈希种子只能有一个进程级闩锁，把它放进
-shim 头会变成每个 TU 一份（B1）。
+`seed.c` 必须与上游四个源文件一起链接：哈希种子只能有一个进程级闩锁，把它放进
+shim 头会变成每个 TU 一份（B1）。文件名保持短（`seed.c`）：ct 对 `ct.pkg` 的每个
+元数据值有 160 字节上限，这条 `ldflags` 已是 159 字节。
 
 `ct.pkg` 的 `cflags` / `ldflags` 使用消费方根目录相对路径（`vendor/dict/third_party/...`），
 与 `ct get` 的安装布局一致；`tests/run.sh` 用包内绝对路径，因此包树内也能直接跑。
@@ -158,7 +159,7 @@ shim 头会变成每个 TU 一份（B1）。
 - **B1 哈希种子按 TU 重复播种**：原 shim 头用 `static int ct_dict_seeded` 闩锁，但
   `dictSetHashFunctionSeed()` 写的是 `dict.c` 的进程级全局；每个 `.ct` 是独立 TU，各持
   一份闩锁，第二个 TU 建表就重新随机，先前插入的键静默 `DICT_NOT_FOUND`。修复：播种
-  移入 `dict/Dict.seed.c`（`void ct_dict_seed_once(void)`，函数级 `static` 闩锁），头文件
+  移入 `dict/seed.c`（`void ct_dict_seed_once(void)`，函数级 `static` 闩锁），头文件
   只留声明，`ct.pkg` / `tests/run.sh` / README 构建命令都链接该单元。门禁：`tests/multi_tu_a.c`
   + `multi_tu_b.c` 双 TU，连续 20 次回读；`tools/check.sh` 同时禁止 shim 出现任何非
   `static inline` 的有状态定义（旧的 seed 白名单已删除），并固定“声明在头、定义在 seed 单元”。
@@ -225,7 +226,7 @@ M14 变异把构造器契约改成“返回 0”，`oom.c` 立即变红；M22 �
 | M25 | 播种必须只有一个进程级闩锁 | 把 `ct_dict_seed_once` 改回 shim 内的 `static inline` + 头级 `static` 闩锁 | `FAIL multi_tu: run N lost keys across translation units` |
 | M26 | 迭代器必须检查 generation | 删除 `iter_next` / `key` / `value` 里的 `ct_dict_gen_valid` 比较 | ASan：`heap-use-after-free`，`FAIL gen: ASan reported a problem` |
 | M27 | README 代码块必须编译且输出正确 | 把 README §3 的 `printf("len: ...")` 改成多打印 1 | `FAIL README block 2 output: see diff`（`-1 +3`） |
-| M28 | 交付物必须被 git 跟踪 | 在干净副本里 `git rm --cached dict/Dict.seed.c` | `FAIL git delivery: delivered files are not tracked: dict/Dict.seed.c` |
+| M28 | 交付物必须被 git 跟踪 | 在干净副本里 `git rm --cached dict/seed.c` | `FAIL git delivery: delivered files are not tracked: dict/seed.c` |
 | M29 | shim 不得有有状态定义 | 在 shim 顶部加 `static int ct_dict_seeded = 0;` | `FAIL shim state: non-static-inline definition or function-local static` |
 
 变异均在 `/tmp/dict-mut` 的整包副本上执行，未改动交付树；每条记录来自对应

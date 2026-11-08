@@ -14,7 +14,7 @@
 #      (`git ls-files --error-unmatch`), so a clean clone is the package;
 #   2. ct.pkg declares the five expected keys, requires ct >= 0.20.3, points at
 #      third_party/ (never vendor/), and links the four upstream sources plus
-#      dict/Dict.seed.c;
+#      dict/seed.c;
 #   3. third_party/ matches tools/third_party.sha256 exactly, with no extra file
 #      other than its README;
 #   4. the licence boundary holds: BSD-3-Clause only, no 7.4+/8.x text;
@@ -23,7 +23,7 @@
 #      and put/clear/reserve return the receiver;
 #   6. the shim has no mutable static state (every definition is `static inline`
 #      except the immutable dictType tables), the hash seed is only *declared*
-#      there and defined in Dict.seed.c, it uses the safe iterator, and it
+#      there and defined in seed.c, it uses the safe iterator, and it
 #      undefines the upstream DICT_OK/DICT_ERR macros before the status enum;
 #   7. dict.c calls no raw allocator: OOM therefore goes through zmalloc's
 #      handler (proved behaviourally by tests/oom.c);
@@ -61,7 +61,7 @@ echo
 
 echo "== delivered files =="
 delivered="ct.pkg LICENSE README.md
-dict/Dict.m.ct dict/DictTypes.h.ct dict/Dict.shim.h dict/Dict.seed.c
+dict/Dict.m.ct dict/DictTypes.h.ct dict/Dict.shim.h dict/seed.c
 third_party/dict.c third_party/dict.h third_party/siphash.c
 third_party/zmalloc.c third_party/zmalloc.h
 third_party/mt19937-64.c third_party/mt19937-64.h
@@ -137,10 +137,16 @@ for src in dict.c siphash.c zmalloc.c mt19937-64.c; do
         bad "ldflags $src" "missing"
     fi
 done
-if grep -q 'vendor/dict/dict/Dict.seed.c' "$pkg/ct.pkg"; then
-    ok "ldflags names dict/Dict.seed.c"
+if grep -q 'vendor/dict/dict/seed.c' "$pkg/ct.pkg"; then
+    ok "ldflags names dict/seed.c"
 else
-    bad "ldflags dict/Dict.seed.c" "the seed unit must be linked, not inlined per TU"
+    bad "ldflags dict/seed.c" "the seed unit must be linked, not inlined per TU"
+fi
+ldf=$(sed -n 's/^ldflags[[:space:]]*=[[:space:]]*//p' "$pkg/ct.pkg" | tr -d '\r')
+if [ "${#ldf}" -lt 160 ]; then
+    ok "ldflags fits ct's 160-byte metadata cap (${#ldf} bytes)"
+else
+    bad "ldflags length" "${#ldf} bytes >= 160; ct get reports 'metadata that does not fit'"
 fi
 if find "$pkg" -type d -name vendor -not -path '*/.git/*' | grep -q .; then
     bad "no vendor/ directory" "ct get skips vendor/, so the dependency would vanish"
@@ -289,16 +295,16 @@ if grep -qE '^void ct_dict_seed_once\(void\);$' "$pkg/dict/Dict.shim.h" &&
 else
     bad "seed declaration" "shim must declare ct_dict_seed_once and never define it"
 fi
-if grep -qE '^void ct_dict_seed_once\(void\)$' "$pkg/dict/Dict.seed.c" &&
-   grep -qE '^[[:space:]]+static int seeded = 0;$' "$pkg/dict/Dict.seed.c"; then
-    ok "Dict.seed.c defines one process-wide latch"
+if grep -qE '^void ct_dict_seed_once\(void\)$' "$pkg/dict/seed.c" &&
+   grep -qE '^[[:space:]]+static int seeded = 0;$' "$pkg/dict/seed.c"; then
+    ok "seed.c defines one process-wide latch"
 else
-    bad "seed unit" "Dict.seed.c must define ct_dict_seed_once with a function-local latch"
+    bad "seed unit" "seed.c must define ct_dict_seed_once with a function-local latch"
 fi
-if grep -q 'Dict.seed.c' "$pkg/tests/run.sh"; then
-    ok "tests link dict/Dict.seed.c"
+if grep -q 'dict/seed.c' "$pkg/tests/run.sh"; then
+    ok "tests link dict/seed.c"
 else
-    bad "tests seed link" "tests/run.sh LDFLAGS must name Dict.seed.c"
+    bad "tests seed link" "tests/run.sh LDFLAGS must name dict/seed.c"
 fi
 if grep -q 'dictGetSafeIterator' "$pkg/dict/Dict.shim.h" && ! grep -q 'dictGetIterator(' "$pkg/dict/Dict.shim.h"; then
     ok "iterator is a safe iterator"
@@ -391,7 +397,7 @@ echo
 
 echo "== README ct blocks =="
 PKG_CFLAGS="-I $pkg/third_party -Wall -Wextra"
-PKG_LDFLAGS="$pkg/third_party/dict.c $pkg/third_party/siphash.c $pkg/third_party/zmalloc.c $pkg/third_party/mt19937-64.c $pkg/dict/Dict.seed.c"
+PKG_LDFLAGS="$pkg/third_party/dict.c $pkg/third_party/siphash.c $pkg/third_party/zmalloc.c $pkg/third_party/mt19937-64.c $pkg/dict/seed.c"
 rm -f "$work"/readme-*.ct "$work"/readme-*.out
 # Every ```ct block in the README must be a complete program. Extract, build,
 # run, and compare stdout: prose that does not compile is a documentation bug,
@@ -464,7 +470,7 @@ else
             cat "$work/install.log" >&2
             install_ok=0
         elif grep -q 'vendor/dict/third_party' "$work/install.log" &&
-             grep -q 'vendor/dict/dict/Dict.seed.c' "$work/install.log"; then
+             grep -q 'vendor/dict/dict/seed.c' "$work/install.log"; then
             ok "ct install prints the third_party and seed flags"
         else
             bad "ct install flags" "third_party missing from the printed command"
@@ -477,7 +483,7 @@ else
             cd "$work" || exit 1
             "$CT" build -I vendor/dict \
                 --cflags "-I vendor/dict/third_party -Wall -Wextra" \
-                --ldflags "vendor/dict/third_party/dict.c vendor/dict/third_party/siphash.c vendor/dict/third_party/zmalloc.c vendor/dict/third_party/mt19937-64.c vendor/dict/dict/Dict.seed.c" \
+                --ldflags "vendor/dict/third_party/dict.c vendor/dict/third_party/siphash.c vendor/dict/third_party/zmalloc.c vendor/dict/third_party/mt19937-64.c vendor/dict/dict/seed.c" \
                 vendor/dict/demo/main.ct -o demo_installed
         ) >"$work/installed.log" 2>&1
         if [ $? -eq 0 ] && ! grep -q 'warning:' "$work/installed.log"; then

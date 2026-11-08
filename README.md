@@ -60,7 +60,7 @@ README 里的每个 `ct` 块都是完整程序：`tools/check.sh` 会逐个抽�
 | 上游 | redis/redis，基线 tag `7.2.4`（`src/`） |
 | 编译器 | `requires = ct >= 0.20.3`（`pub type` 与 OO 映射按 ct v0.20.3 实测） |
 | 包依赖 | 无 |
-| 链接 | `ldflags` 编译 `dict.c` / `siphash.c` / `zmalloc.c` / `mt19937-64.c` / `dict/Dict.seed.c` |
+| 链接 | `ldflags` 编译 `dict.c` / `siphash.c` / `zmalloc.c` / `mt19937-64.c` / `dict/seed.c` |
 
 **未发布状态**：本仓库没有 `v*` tag。`index/index` 无本包行；`index/packages.txt` 中的行
 保持注释（`refresh-index.sh` 遇到无 tag 仓库会整体失败）；`tools/repos.txt` 的 `tag` 列写 `-`。
@@ -83,7 +83,7 @@ ct install
 ```sh
 ct build -I vendor/dict \
     --cflags '-I vendor/dict/third_party' \
-    --ldflags 'vendor/dict/third_party/dict.c vendor/dict/third_party/siphash.c vendor/dict/third_party/zmalloc.c vendor/dict/third_party/mt19937-64.c vendor/dict/dict/Dict.seed.c' \
+    --ldflags 'vendor/dict/third_party/dict.c vendor/dict/third_party/siphash.c vendor/dict/third_party/zmalloc.c vendor/dict/third_party/mt19937-64.c vendor/dict/dict/seed.c' \
     yourapp.ct -o yourapp
 ```
 
@@ -321,7 +321,7 @@ int main(void)
 - 键语义（Q1）：`put` 复制键并由表持有，覆盖只替换值、保留首个键副本；值始终借用。
 - 扩容语义（Q2/Q3）：`reserve()` 逻辑拒绝返回 `DICT_INVALID`，真实分配失败 abort；
   扩容成败用桶数前后差判定，不信任上游非终止入口的返回值。
-- 哈希种子（B1）：播种移入独立编译单元 `dict/Dict.seed.c`（函数级 `static` 闩锁），
+- 哈希种子（B1）：播种移入独立编译单元 `dict/seed.c`（函数级 `static` 闩锁），
   shim 头只留声明；同一进程内无论多少个调用方 TU，都只播种一次。`tests/multi_tu_a.c` /
   `multi_tu_b.c` 组成双 TU 门禁，连续 20 次"第二张表建完后回读第一张表"必须全中。
 - 迭代器失效（R1）：generation 守卫——`clear()` / `release()` 自增句柄代数，迭代器

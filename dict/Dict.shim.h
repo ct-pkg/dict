@@ -210,7 +210,7 @@ static dictType ct_dict_int_type = {
  * no per-table seed in 7.2.4, and reproducing Redis' cross-table seed is not
  * useful to a consumer. Tests never depend on bucket order.
  *
- * The seeding function lives in Dict.seed.c, not here: a per-header static
+ * The seeding function lives in seed.c, not here: a per-header static
  * latch would give every translation unit its own "already seeded" flag, and
  * the second unit to construct a table would re-randomise the process-global,
  * orphaning every key the first unit inserted.
